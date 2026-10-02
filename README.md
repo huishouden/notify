@@ -130,7 +130,8 @@ try a run locally: put the two secrets in `.dev.vars` (git-ignored), `bun run de
 
 Each run sends one `NotifyRun` event (the run's counts, its duration and, if it threw, the error
 message; never reminder text, households or addresses) to New Relic's Event API, where alerts fire
-when no run arrives for 20 minutes or a run fails (pwa-kit `docs/observability.md`). It uses one of
+when no run arrives for 20 minutes, a run throws, or more than 5 pushes fail in an hour (the
+`failed` count; pwa-kit `docs/observability.md`). A heartbeat that can't be sent is logged. It uses one of
 the subrequests a run keeps spare. Without these two settings nothing is sent:
 
 ```sh
