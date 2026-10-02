@@ -1,0 +1,17 @@
+{
+  "_note": "One documents:batchWrite response with a write of each outcome the sender handles, in this order: applied, FAILED_PRECONDITION (changed since read), NOT_FOUND (deleted since read), ABORTED (contention), INTERNAL.",
+  "writeResults": [
+    { "updateTime": "2026-01-01T12:00:00.100000Z" },
+    {},
+    {},
+    {},
+    {}
+  ],
+  "status": [
+    {},
+    { "code": 9, "message": "the stored version (1767268800200000) does not match the required base version (1767225601000001)" },
+    { "code": 5, "message": "no entity to update" },
+    { "code": 10, "message": "Too much contention on these documents. Please try again." },
+    { "code": 13, "message": "Internal error encountered." }
+  ]
+}

@@ -67,13 +67,18 @@ export class Firestore {
   }
 
   private static fail(what: string, status: number, body: unknown): Error {
-    const message = (body as { error?: { message?: string } })?.error?.message ?? '';
-    return new Error(`[${status}] Firestore ${what}: ${message}`);
+    // runQuery streams, so its errors come as a one-element array.
+    const error = (Array.isArray(body) ? body[0] : body) as { error?: { message?: string; status?: string } } | undefined;
+    const reason = error?.error?.status ? `${error.error.status} ` : '';
+    return new Error(`[${status}] Firestore ${what}: ${reason}${error?.error?.message ?? ''}`.trim());
   }
 
-  /** Unsent reminders due by `now`, oldest first, across every household (a collection group query). */
-  async dueReminders(now: number, limit: number): Promise<RestDocument[]> {
-    const { status, body } = await this.call<{ document?: RestDocument }[]>('POST', `${this.root}:runQuery`, dueRemindersQuery(now, limit));
+  /**
+   * Unsent reminders due by `now` across every household (a collection group query), oldest or
+   * newest first.
+   */
+  async dueReminders(now: number, limit: number, direction: Direction = 'ASCENDING'): Promise<RestDocument[]> {
+    const { status, body } = await this.call<{ document?: RestDocument }[]>('POST', `${this.root}:runQuery`, dueRemindersQuery(now, limit, direction));
     if (status !== 200) throw Firestore.fail('runQuery', status, body);
     return body.filter((r) => r.document).map((r) => r.document!);
   }
@@ -93,22 +98,25 @@ export class Firestore {
   }
 
   /**
-   * Marks a reminder sent, only if it is unchanged since it was read (`updateTime` precondition).
-   * False when someone else got there first: another run, or a member editing or rescheduling it.
+   * Marks documents sent in one non-atomic `batchWrite`, each only if unchanged since it was read
+   * (`updateTime` precondition), and says per document whether it was marked. `raced` means someone
+   * else got there first: another run, or a member editing, rescheduling or deleting it.
    */
-  async markSent(doc: RestDocument, sentAt: number): Promise<boolean> {
-    const params = new URLSearchParams();
-    params.append('updateMask.fieldPaths', 'sent');
-    params.append('updateMask.fieldPaths', 'sentAt');
-    params.append('currentDocument.updateTime', doc.updateTime);
-    const { status, body } = await this.call('PATCH', `${doc.name}?${params}`, {
-      fields: { sent: { booleanValue: true }, sentAt: { integerValue: String(sentAt) } },
+  async markSent(docs: RestDocument[], sentAt: number): Promise<WriteOutcome[]> {
+    if (docs.length === 0) return [];
+    const writes = docs.map((doc) => ({
+      update: { name: doc.name, fields: { sent: { booleanValue: true }, sentAt: { integerValue: String(sentAt) } } },
+      updateMask: { fieldPaths: ['sent', 'sentAt'] },
+      currentDocument: { updateTime: doc.updateTime },
+    }));
+    const { status, body } = await this.call<{ status?: { code?: number; message?: string }[] }>('POST', `${this.root}:batchWrite`, { writes });
+    if (status !== 200) throw Firestore.fail('batchWrite', status, body);
+    return docs.map((_, i) => {
+      const code = body.status?.[i]?.code ?? 0;
+      if (code === 0) return { ok: true };
+      if (RACED_CODES.includes(code)) return { ok: false, raced: true };
+      return { ok: false, raced: false, error: `code ${code}: ${body.status?.[i]?.message ?? ''}`.trim() };
     });
-    if (status === 200) return true;
-    // NOT_FOUND (deleted since read) or FAILED_PRECONDITION (changed since read).
-    const reason = (body as { error?: { status?: string } })?.error?.status;
-    if (status === 404 || reason === 'FAILED_PRECONDITION' || reason === 'ABORTED') return false;
-    throw Firestore.fail('markSent', status, body);
   }
 
   async delete(name: string): Promise<void> {
@@ -117,7 +125,14 @@ export class Firestore {
   }
 }
 
-export function dueRemindersQuery(now: number, limit: number) {
+export type Direction = 'ASCENDING' | 'DESCENDING';
+
+export type WriteOutcome = { ok: true } | { ok: false; raced: true } | { ok: false; raced: false; error: string };
+
+/** NOT_FOUND, FAILED_PRECONDITION and ABORTED (google.rpc.Code). */
+const RACED_CODES = [5, 9, 10];
+
+export function dueRemindersQuery(now: number, limit: number, direction: Direction = 'ASCENDING') {
   return {
     structuredQuery: {
       from: [{ collectionId: 'reminders', allDescendants: true }],
@@ -130,7 +145,7 @@ export function dueRemindersQuery(now: number, limit: number) {
           ],
         },
       },
-      orderBy: [{ field: { fieldPath: 'at' }, direction: 'ASCENDING' }],
+      orderBy: [{ field: { fieldPath: 'at' }, direction }],
       limit,
     },
   };
