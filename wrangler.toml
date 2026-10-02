@@ -17,5 +17,5 @@ enabled = true
 # The Firebase project the Huishouden apps use (public: it ships in every app's web config).
 FIREBASE_PROJECT_ID = "huishouden-piekstra"
 # From `bun run vapid`; the same key goes in each app repo's VITE_VAPID_PUBLIC_KEY variable.
-VAPID_PUBLIC_KEY = ""
+VAPID_PUBLIC_KEY = "BORorVipYYfZaXFZA_XtfBu3CQLg-I3JuC_OC5avpprgqMdz3NYLJP6UdCt-5yjbgRgB8xPJPBSMTRuJl3sHIX0"
 VAPID_SUBJECT = "https://github.com/huishouden/notify"
