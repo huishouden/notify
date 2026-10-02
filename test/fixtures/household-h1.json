@@ -1,0 +1,9 @@
+{
+  "name": "projects/demo-huishouden/databases/(default)/documents/households/h1",
+  "fields": {
+    "name": { "stringValue": "Example Household" },
+    "members": { "arrayValue": { "values": [{ "stringValue": "alex@example.com" }, { "stringValue": "sam@example.com" }] } },
+    "createdAt": { "integerValue": "1767000000000" }
+  },
+  "updateTime": "2026-01-01T00:00:00.000000Z"
+}
