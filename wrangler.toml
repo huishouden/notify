@@ -1,0 +1,21 @@
+# Huishouden notify: sends due reminders as Web Push notifications, for every household.
+name = "huishouden-notify"
+main = "src/index.ts"
+compatibility_date = "2026-09-01"
+workers_dev = false
+
+[triggers]
+crons = ["*/5 * * * *"]
+
+[observability]
+enabled = true
+
+# Public values. Secrets are set with `bunx wrangler secret put`, never written here:
+#   GOOGLE_SERVICE_ACCOUNT  service account key JSON (roles/datastore.user only)
+#   VAPID_PRIVATE_KEY       from `bun run vapid`
+[vars]
+# The Firebase project the Huishouden apps use (public: it ships in every app's web config).
+FIREBASE_PROJECT_ID = "huishouden-piekstra"
+# From `bun run vapid`; the same key goes in each app repo's VITE_VAPID_PUBLIC_KEY variable.
+VAPID_PUBLIC_KEY = ""
+VAPID_SUBJECT = "https://github.com/huishouden/notify"

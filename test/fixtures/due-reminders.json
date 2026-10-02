@@ -1,0 +1,61 @@
+[
+  {
+    "document": {
+      "name": "projects/demo-huishouden/databases/(default)/documents/households/h1/reminders/pet-c1-20260101-1155",
+      "fields": {
+        "app": { "stringValue": "pet" },
+        "title": { "stringValue": "Biscuit: 1 tablet" },
+        "body": { "stringValue": "Example-ol 25 mg, with food" },
+        "at": { "integerValue": "1767268740000" },
+        "url": { "stringValue": "https://example-pet.web.app/meds/c1" },
+        "recipients": { "stringValue": "all" },
+        "ref": { "stringValue": "c1" },
+        "sent": { "booleanValue": false },
+        "createdAt": { "integerValue": "1767182400000" },
+        "by": { "stringValue": "alex@example.com" }
+      },
+      "createTime": "2026-01-01T00:00:00.000000Z",
+      "updateTime": "2026-01-01T00:00:01.000001Z"
+    },
+    "readTime": "2026-01-01T12:00:00.000000Z"
+  },
+  {
+    "document": {
+      "name": "projects/demo-huishouden/databases/(default)/documents/households/h1/reminders/tasks-bins",
+      "fields": {
+        "app": { "stringValue": "tasks" },
+        "title": { "stringValue": "Bins out tonight" },
+        "body": { "stringValue": "" },
+        "at": { "integerValue": "1767268770000" },
+        "url": { "stringValue": "https://example-tasks.web.app/" },
+        "recipients": { "arrayValue": { "values": [{ "stringValue": "Sam@Example.com" }, { "stringValue": "mallory@example.com" }] } },
+        "sent": { "booleanValue": false },
+        "createdAt": { "integerValue": "1767182400000" },
+        "by": { "stringValue": "alex@example.com" }
+      },
+      "createTime": "2026-01-01T00:00:00.000000Z",
+      "updateTime": "2026-01-01T00:00:02.000002Z"
+    },
+    "readTime": "2026-01-01T12:00:00.000000Z"
+  },
+  {
+    "document": {
+      "name": "projects/demo-huishouden/databases/(default)/documents/households/h2/reminders/pet-stale",
+      "fields": {
+        "app": { "stringValue": "pet" },
+        "title": { "stringValue": "Pepper: 0.5 ml" },
+        "body": { "stringValue": "Ear drops" },
+        "at": { "integerValue": "1767221940000" },
+        "url": { "stringValue": "https://example-pet.web.app/meds/c9" },
+        "recipients": { "stringValue": "all" },
+        "sent": { "booleanValue": false },
+        "createdAt": { "integerValue": "1767182400000" },
+        "by": { "stringValue": "kim@example.com" }
+      },
+      "createTime": "2026-01-01T00:00:00.000000Z",
+      "updateTime": "2026-01-01T00:00:03.000003Z"
+    },
+    "readTime": "2026-01-01T12:00:00.000000Z"
+  },
+  { "readTime": "2026-01-01T12:00:00.000000Z" }
+]

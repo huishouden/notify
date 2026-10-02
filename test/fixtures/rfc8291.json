@@ -1,0 +1,18 @@
+{
+  "_source": "RFC 8291, section 5 and appendix A (https://www.rfc-editor.org/rfc/rfc8291)",
+  "_names": "ua_shared is the RFC's auth_secret and ecdh_shared its ecdh_secret, renamed so the leak scan doesn't read published test values as credentials",
+  "plaintext": "When I grow up, I want to be a watermelon",
+  "as_public": "BP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A8",
+  "as_private": "yfWPiYE-n46HLnH0KqZOF1fJJU3MYrct3AELtAQ-oRw",
+  "ua_public": "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4",
+  "ua_private": "q1dXpw3UpT5VOmu_cf_v6ih07Aems3njxI-JWgLcM94",
+  "salt": "DGv6ra1nlYgDCS1FRnbzlw",
+  "ua_shared": "BTBZMqHH6r4Tts7J_aSIgg",
+  "ecdh_shared": "kyrL1jIIOHEzg3sM2ZWRHDRB62YACZhhSlknJ672kSs",
+  "ikm": "S4lYMb_L0FxCeq0WhDx813KgSYqU26kOyzWUdsXYyrg",
+  "cek": "oIhVW04MRdy2XN9CiKLxTg",
+  "nonce": "4h_95klXJ5E_qnoN",
+  "header": "DGv6ra1nlYgDCS1FRnbzlwAAEABBBP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A8",
+  "ciphertext": "8pfeW0KbunFT06SuDKoJH9Ql87S1QUrdirN6GcG7sFz1y1sqLgVi1VhjVkHsUoEsbI_0LpXMuGvnzQ",
+  "message": "DGv6ra1nlYgDCS1FRnbzlwAAEABBBP4z9KsN6nGRTbVYI_c7VJSPQTBtkgcy27mlmlMoZIIgDll6e3vCYLocInmYWAmS6TlzAC8wEqKK6PBru3jl7A_yl95bQpu6cVPTpK4Mqgkf1CXztLVBSt2Ks3oZwbuwXPXLWyouBWLVWGNWQexSgSxsj_Qulcy4a-fN"
+}

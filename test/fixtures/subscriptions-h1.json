@@ -1,0 +1,169 @@
+{
+  "documents": [
+    {
+      "name": "projects/demo-huishouden/databases/(default)/documents/households/h1/pushSubscriptions/alex-pet-phone",
+      "fields": {
+        "email": {
+          "stringValue": "alex@example.com"
+        },
+        "app": {
+          "stringValue": "pet"
+        },
+        "endpoint": {
+          "stringValue": "https://push.example.net/alex-phone-pet"
+        },
+        "keys": {
+          "mapValue": {
+            "fields": {
+              "p256dh": {
+                "stringValue": "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4"
+              },
+              "auth": {
+                "stringValue": "BTBZMqHH6r4Tts7J_aSIgg"
+              }
+            }
+          }
+        },
+        "ua": {
+          "stringValue": "Mozilla/5.0 (Example)"
+        },
+        "createdAt": {
+          "integerValue": "1767100000000"
+        }
+      },
+      "updateTime": "2026-01-01T00:00:00.000000Z"
+    },
+    {
+      "name": "projects/demo-huishouden/databases/(default)/documents/households/h1/pushSubscriptions/alex-tasks-phone",
+      "fields": {
+        "email": {
+          "stringValue": "alex@example.com"
+        },
+        "app": {
+          "stringValue": "tasks"
+        },
+        "endpoint": {
+          "stringValue": "https://push.example.net/alex-phone-tasks"
+        },
+        "keys": {
+          "mapValue": {
+            "fields": {
+              "p256dh": {
+                "stringValue": "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4"
+              },
+              "auth": {
+                "stringValue": "BTBZMqHH6r4Tts7J_aSIgg"
+              }
+            }
+          }
+        },
+        "ua": {
+          "stringValue": "Mozilla/5.0 (Example)"
+        },
+        "createdAt": {
+          "integerValue": "1767100000000"
+        }
+      },
+      "updateTime": "2026-01-01T00:00:00.000000Z"
+    },
+    {
+      "name": "projects/demo-huishouden/databases/(default)/documents/households/h1/pushSubscriptions/sam-tasks-tablet",
+      "fields": {
+        "email": {
+          "stringValue": "sam@example.com"
+        },
+        "app": {
+          "stringValue": "tasks"
+        },
+        "endpoint": {
+          "stringValue": "https://push.example.net/tablet-tasks"
+        },
+        "keys": {
+          "mapValue": {
+            "fields": {
+              "p256dh": {
+                "stringValue": "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4"
+              },
+              "auth": {
+                "stringValue": "BTBZMqHH6r4Tts7J_aSIgg"
+              }
+            }
+          }
+        },
+        "ua": {
+          "stringValue": "Mozilla/5.0 (Example)"
+        },
+        "createdAt": {
+          "integerValue": "1767100000000"
+        }
+      },
+      "updateTime": "2026-01-01T00:00:00.000000Z"
+    },
+    {
+      "name": "projects/demo-huishouden/databases/(default)/documents/households/h1/pushSubscriptions/alex-tasks-tablet",
+      "fields": {
+        "email": {
+          "stringValue": "alex@example.com"
+        },
+        "app": {
+          "stringValue": "tasks"
+        },
+        "endpoint": {
+          "stringValue": "https://push.example.net/tablet-tasks"
+        },
+        "keys": {
+          "mapValue": {
+            "fields": {
+              "p256dh": {
+                "stringValue": "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4"
+              },
+              "auth": {
+                "stringValue": "BTBZMqHH6r4Tts7J_aSIgg"
+              }
+            }
+          }
+        },
+        "ua": {
+          "stringValue": "Mozilla/5.0 (Example)"
+        },
+        "createdAt": {
+          "integerValue": "1767100000000"
+        }
+      },
+      "updateTime": "2026-01-01T00:00:00.000000Z"
+    },
+    {
+      "name": "projects/demo-huishouden/databases/(default)/documents/households/h1/pushSubscriptions/sam-tasks-old",
+      "fields": {
+        "email": {
+          "stringValue": "sam@example.com"
+        },
+        "app": {
+          "stringValue": "tasks"
+        },
+        "endpoint": {
+          "stringValue": "https://gone.example.org/sam-old-laptop"
+        },
+        "keys": {
+          "mapValue": {
+            "fields": {
+              "p256dh": {
+                "stringValue": "BCVxsr7N_eNgVRqvHtD0zTZsEc6-VV-JvLexhqUzORcxaOzi6-AYWXvTBHm4bjyPjs7Vd8pZGH6SRpkNtoIAiw4"
+              },
+              "auth": {
+                "stringValue": "BTBZMqHH6r4Tts7J_aSIgg"
+              }
+            }
+          }
+        },
+        "ua": {
+          "stringValue": "Mozilla/5.0 (Example)"
+        },
+        "createdAt": {
+          "integerValue": "1767100000000"
+        }
+      },
+      "updateTime": "2026-01-01T00:00:00.000000Z"
+    }
+  ]
+}
