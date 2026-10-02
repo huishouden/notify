@@ -14,18 +14,31 @@ Every 5 minutes:
 
 1. Gets an access token for its Google service account (a JWT signed in the Worker, exchanged at
    Google's token endpoint), which may read and write Firestore and nothing else.
-2. Asks Firestore for reminders across all households that are unsent and due:
-   collection group `reminders`, `sent == false`, `at <= now`, oldest first, 50 at a time.
-3. For each household involved, reads its members, their roles and its `pushSubscriptions`.
-4. Works out the devices: `recipients: 'all'` means every member, a list means those listed who are
-   still members. For each person, the devices where they turned notifications on in the
-   reminder's app, or all their devices when they did that only in other apps. A device shared by
-   two recipients (the household tablet) gets one notification. A private reminder (`private`
-   not `false`, or from Spending or Bills) goes only to admins and members, never to helpers or
-   kids (huishouden/rules README "Roles").
-5. Marks the reminder sent, on the condition that it hasn't changed since step 2 (Firestore
-   `currentDocument.updateTime`). Overlapping runs, or a member editing the reminder meanwhile,
-   can't cause a second notification.
+2. Asks Firestore for reminders across all households that are unsent and due (collection group
+   `reminders`, `sent == false`, `at <= now`) twice at once: the 50 oldest and the 50 newest. One
+   household's backlog can fill the oldest 50 on its own; the newest 50 still reach everyone
+   else. While the newest-first index is missing or building, the run logs one line and uses the
+   oldest 50 alone.
+3. Shares the run fairly between households: each household's due reminders oldest first, the
+   households in order of their oldest due reminder, then round by round, every household's first
+   reminder before any household's second. At most 10 per household per run; the rest are counted
+   as `capped` and wait for the next run.
+4. Going down that order, reads each household's members, roles and `pushSubscriptions` (once per
+   household) and works out the devices: `recipients: 'all'` means every member, a list means
+   those listed who are still members. For each person, the devices where they turned
+   notifications on in the reminder's app, or all their devices when they did that only in other
+   apps. A device shared by two recipients (the household tablet) gets one notification. A private
+   reminder (`private` not `false`, or from Spending or Bills) goes only to admins and members,
+   never to helpers or kids (huishouden/rules README "Roles").
+
+   A reminder is taken only when all of its devices fit in what is left of the run's 45
+   requests; the rest wait for the next run, and a household's later reminders wait behind an
+   earlier one that didn't fit. A reminder with more devices than any run allows, when it is
+   the first in line, goes to as many as fit.
+5. Marks the chosen reminders sent in one Firestore `batchWrite`, each on the condition that it
+   hasn't changed since step 2 (`currentDocument.updateTime`), and pushes only those whose write
+   succeeded. Overlapping runs, or a member editing or deleting the reminder meanwhile, can't cause
+   a second notification; those count as `raced`.
 6. Sends a Web Push message to each device: encrypted for that device (RFC 8291, aes128gcm) and
    signed with the Huishouden VAPID key (RFC 8292). No Firebase Cloud Messaging or other push
    account is involved.
@@ -33,7 +46,12 @@ Every 5 minutes:
    notifications were turned off).
 
 Reminders more than 12 hours overdue (after an outage, say) are marked sent without a
-notification, so nobody gets a pile of stale medicine reminders at once.
+notification, so nobody gets a pile of stale medicine reminders at once (`late`), and so are
+malformed ones (`invalid`), in the same `batchWrite` as the claims.
+
+Each run logs one line of counts (`due`, `sent`, `pushed`, `failed`, `removed`, `late`,
+`invalid`, `raced`, `noDevices`, `capped`, and `deferred`: something due was left for a later
+run).
 
 The push message is JSON the kit's service worker shows: `{ title, body, url, tag, app }`;
 tapping it opens `url` in the app.
@@ -42,22 +60,24 @@ tapping it opens `url` in the app.
 |---|---|
 | `src/index.ts` | The Worker: the cron handler, and a one-line page for any HTTP request |
 | `src/heartbeat.ts` | One `NotifyRun` event per run to New Relic, for the "silent" and "failing" alerts |
-| `src/send.ts` | One run: query, recipients, claim, send, clean up |
+| `src/send.ts` | One run: query, fair order, recipients, claim, send, clean up |
 | `src/webpush.ts` | Web Push encryption and VAPID with WebCrypto only |
 | `src/google.ts` | Service account token |
-| `src/firestore.ts` | The Firestore REST calls and value decoding |
+| `src/firestore.ts` | The Firestore REST calls (query, read, `batchWrite`, delete) and value decoding |
 | `scripts/vapid.ts` | `bun run vapid`: a new VAPID key pair |
 
 ## Limits
 
 - **5-minute granularity.** A reminder due at 08:00 arrives between 08:00 and about 08:05.
 - **Cloudflare free plan**: 100,000 requests a day (the schedule uses 288), 50 outgoing requests
-  per run and 10 ms of CPU per run. A run uses one request for the query, two per household, one
-  per reminder and one per device, and stops at 45; whatever didn't fit goes out 5 minutes later.
+  per run and 10 ms of CPU per run. A run uses one request for the token, two for the queries,
+  two per household, one `batchWrite` and one per device, plus deletes of dropped subscriptions
+  when requests are left, and stays within 45; whatever didn't fit goes out 5 minutes later.
   The encryption is done by the runtime's native WebCrypto, well inside the CPU limit for the
   number of devices a run can reach.
-- **Firestore free tier**: each run reads the due reminders plus each involved household and its
-  subscriptions, and an empty run costs one read; about 300 reads a day when idle, against 50,000.
+- **Firestore free tier**: each run reads at most 100 due reminders (the two windows overlap
+  when fewer are due) plus each involved household and its subscriptions, and an empty run costs
+  two reads (one per query); about 600 reads a day when idle, against 50,000.
 - **iPhone and iPad** only show notifications for an app added to the Home Screen (Share > Add to
   Home Screen), on iOS/iPadOS 16.4 or later. In Safari tabs, and on older versions, there is no Web
   Push. `pushSupport()` in the kit says which case a device is in, so the app can explain.
@@ -114,8 +134,9 @@ indexes, no other Google services). If key creation fails with
 blocks keys; turn that constraint off for this project in the Cloud console (IAM > Organization
 policies), since a Worker outside Google Cloud has no keyless way in.
 
-The Firestore index the query needs (`reminders`, collection group, `sent` then `at`) is in the
-tasks repo's `firestore.indexes.json`, deployed with the rules.
+The Firestore indexes the queries need (`reminders`, collection group, `sent` then `at`, one
+ascending and one descending) are in huishouden/rules' `firestore.indexes.json`, deployed with the
+rules.
 
 ### 4. Deploy
 
