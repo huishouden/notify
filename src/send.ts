@@ -18,7 +18,7 @@ export const MAX_LATE_MS = 12 * 3600_000;
 export const BATCH = 50;
 /**
  * Outgoing requests per run. Cloudflare's free plan allows 50 subrequests per invocation; a few are
- * kept spare. Whatever doesn't fit waits for the next run, five minutes later.
+ * kept spare, one of them for the heartbeat (`HEARTBEAT_SUBREQUESTS` in ./heartbeat). Whatever doesn't fit waits for the next run, five minutes later.
  */
 export const SUBREQUEST_BUDGET = 45;
 

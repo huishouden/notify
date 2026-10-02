@@ -39,6 +39,7 @@ tapping it opens `url` in the app.
 | File | Does |
 |---|---|
 | `src/index.ts` | The Worker: the cron handler, and a one-line page for any HTTP request |
+| `src/heartbeat.ts` | One `NotifyRun` event per run to New Relic, for the "silent" and "failing" alerts |
 | `src/send.ts` | One run: query, recipients, claim, send, clean up |
 | `src/webpush.ts` | Web Push encryption and VAPID with WebCrypto only |
 | `src/google.ts` | Service account token |
@@ -124,6 +125,22 @@ bunx wrangler tail          # live logs: one line of counts per run
 `FIREBASE_PROJECT_ID` in `wrangler.toml` names the project (public, like the apps' web config). To
 try a run locally: put the two secrets in `.dev.vars` (git-ignored), `bun run dev`, then open
 `http://localhost:8787/__scheduled`.
+
+### Monitoring
+
+Each run sends one `NotifyRun` event (the run's counts, its duration and, if it threw, the error
+message; never reminder text, households or addresses) to New Relic's Event API, where alerts fire
+when no run arrives for 20 minutes, a run throws, or more than 5 pushes fail in an hour (the
+`failed` count; pwa-kit `docs/observability.md`). A heartbeat that can't be sent is logged. It uses one of
+the subrequests a run keeps spare. Without these two settings nothing is sent:
+
+```sh
+# wrangler.toml [vars] has NEW_RELIC_ACCOUNT_ID (public). The ingest key is a secret:
+bunx wrangler secret put NEW_RELIC_LICENSE_KEY   # paste a New Relic license (ingest) key
+```
+
+Cloudflare's own Workers Observability (`[observability]` in `wrangler.toml`) keeps the logs:
+`bunx wrangler tail`, or the dashboard's Workers > huishouden-notify > Logs.
 
 ### Deploy from GitHub Actions (optional)
 
