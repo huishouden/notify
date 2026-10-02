@@ -21,4 +21,4 @@ FIREBASE_PROJECT_ID = "huishouden-piekstra"
 VAPID_PUBLIC_KEY = "BORorVipYYfZaXFZA_XtfBu3CQLg-I3JuC_OC5avpprgqMdz3NYLJP6UdCt-5yjbgRgB8xPJPBSMTRuJl3sHIX0"
 VAPID_SUBJECT = "https://github.com/huishouden/notify"
 # New Relic account for the NotifyRun heartbeat (public; the ingest key is a secret).
-NEW_RELIC_ACCOUNT_ID = "2815346"
+NEW_RELIC_ACCOUNT_ID = "8578044"
