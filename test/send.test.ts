@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, test } from 'bun:test';
 import { fromB64url, type Bytes } from '../src/b64';
 import { importKeyPair, deriveKeys } from '../src/webpush';
 import { resetTokenCache } from '../src/google';
-import { payload, run, SUBREQUEST_BUDGET, targets, toReminder, toSubscription, type Subscription } from '../src/send';
+import { payload, roleOf, run, SUBREQUEST_BUDGET, targets, toReminder, toSubscription, type Subscription } from '../src/send';
 import due from './fixtures/due-reminders.json';
 import household from './fixtures/household-h1.json';
 import subscriptions from './fixtures/subscriptions-h1.json';
@@ -71,6 +71,30 @@ describe('targets', () => {
     expect(reminders[1].recipients).toEqual(['sam@example.com', 'mallory@example.com']);
     expect(targets(reminders[1], members, subs).map((s) => s.name.split('/').pop())).toEqual(['sam-tasks-tablet', 'sam-tasks-old']);
     expect(targets(reminders[1], ['alex@example.com'], subs)).toEqual([]);
+  });
+});
+
+describe('roles', () => {
+  const members = ['alex@example.com', 'sam@example.com'];
+  const roles = { 'sam@example.com': 'helper' };
+
+  test('a private reminder skips helpers and kids; an open one reaches everyone', () => {
+    const open = { ...reminders[0], private: false };
+    const secret = { ...reminders[0], private: true };
+    expect(targets(open, members, subs, roles).map((s) => s.email)).toContain('sam@example.com');
+    expect(targets(secret, members, subs, roles).map((s) => s.email)).toEqual(['alex@example.com']);
+    expect(targets(secret, members, subs, { 'sam@example.com': 'kid' }).map((s) => s.email)).toEqual(['alex@example.com']);
+    // Without roles, everyone is an admin or member.
+    expect(targets(secret, members, subs).map((s) => s.email)).toContain('sam@example.com');
+  });
+
+  test('money reminders and ones written before the flag are private; open ones say so', () => {
+    const doc = (fields: Record<string, unknown>) => ({ ...(reminders[0].doc as object), fields: { ...(reminders[0].doc as { fields: object }).fields, ...fields } });
+    expect(toReminder(doc({}) as never)!.private).toBe(true);
+    expect(toReminder(doc({ private: { booleanValue: false } }) as never)!.private).toBe(false);
+    expect(toReminder(doc({ private: { booleanValue: false }, app: { stringValue: 'bills' } }) as never)!.private).toBe(true);
+    expect(roleOf('alex@example.com', members)).toBe('admin');
+    expect(roleOf('sam@example.com', members)).toBe('member');
   });
 });
 

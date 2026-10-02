@@ -16,11 +16,13 @@ Every 5 minutes:
    Google's token endpoint), which may read and write Firestore and nothing else.
 2. Asks Firestore for reminders across all households that are unsent and due:
    collection group `reminders`, `sent == false`, `at <= now`, oldest first, 50 at a time.
-3. For each household involved, reads its members and its `pushSubscriptions`.
+3. For each household involved, reads its members, their roles and its `pushSubscriptions`.
 4. Works out the devices: `recipients: 'all'` means every member, a list means those listed who are
    still members. For each person, the devices where they turned notifications on in the
    reminder's app, or all their devices when they did that only in other apps. A device shared by
-   two recipients (the household tablet) gets one notification.
+   two recipients (the household tablet) gets one notification. A private reminder (`private`
+   not `false`, or from Spending or Bills) goes only to admins and members, never to helpers or
+   kids (huishouden/rules README "Roles").
 5. Marks the reminder sent, on the condition that it hasn't changed since step 2 (Firestore
    `currentDocument.updateTime`). Overlapping runs, or a member editing the reminder meanwhile,
    can't cause a second notification.

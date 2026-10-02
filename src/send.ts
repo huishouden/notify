@@ -31,8 +31,16 @@ export interface Reminder {
   at: number;
   url: string;
   recipients: 'all' | string[];
+  /**
+   * For admins and members only: marked private, from Spending or Bills, or written before the
+   * flag existed (the rules treat that as private to helpers and kids too).
+   */
+  private: boolean;
   doc: RestDocument;
 }
+
+/** Apps whose reminders are money, never sent to helpers or kids (pwa-kit `MONEY_APPS`). */
+const MONEY_APPS = ['spending', 'bills'];
 
 export interface Subscription {
   name: string;
@@ -77,7 +85,8 @@ export function toReminder(doc: RestDocument): Reminder | null {
   const recipients = d.recipients === 'all' ? 'all' : Array.isArray(d.recipients) ? d.recipients.map((e) => String(e).toLowerCase()) : null;
   if (!recipients) return null;
   const url = typeof d.url === 'string' && /^https:\/\//.test(d.url) ? d.url : '/';
-  return { id: path[3], householdId: path[1], app: d.app, title: d.title, body: typeof d.body === 'string' ? d.body : '', at: d.at, url, recipients, doc };
+  const isPrivate = d.private !== false || MONEY_APPS.includes(d.app);
+  return { id: path[3], householdId: path[1], app: d.app, title: d.title, body: typeof d.body === 'string' ? d.body : '', at: d.at, url, recipients, private: isPrivate, doc };
 }
 
 export function toSubscription(doc: RestDocument): Subscription | null {
@@ -94,13 +103,25 @@ export function toSubscription(doc: RestDocument): Subscription | null {
 }
 
 /**
+ * A member's role as the rules work it out (huishouden/rules README "Roles"): named in `roles`, or
+ * else a member, except the creator (first in `members`), an admin.
+ */
+export function roleOf(email: string, members: string[], roles: Record<string, unknown> = {}): string {
+  const r = roles[email];
+  if (typeof r === 'string') return r;
+  return members[0]?.toLowerCase() === email ? 'admin' : 'member';
+}
+
+/**
  * Where one reminder goes: each recipient who is still a member, on the devices where they turned
  * notifications on in the reminder's own app, or on all their devices when they did so only in
- * other apps. A device shared by two recipients (the household tablet) gets it once.
+ * other apps. A device shared by two recipients (the household tablet) gets it once. A private
+ * reminder goes only to admins and members: helpers and kids can't read it in the app either.
  */
-export function targets(reminder: Reminder, members: string[], subscriptions: Subscription[]): Subscription[] {
+export function targets(reminder: Reminder, members: string[], subscriptions: Subscription[], roles: Record<string, unknown> = {}): Subscription[] {
   const memberSet = new Set(members.map((m) => m.toLowerCase()));
-  const people = reminder.recipients === 'all' ? [...memberSet] : reminder.recipients.filter((e) => memberSet.has(e));
+  const everyone = reminder.recipients === 'all' ? [...memberSet] : reminder.recipients.filter((e) => memberSet.has(e));
+  const people = reminder.private ? everyone.filter((e) => ['admin', 'member'].includes(roleOf(e, members, roles))) : everyone;
   const chosen = new Map<string, Subscription>();
   for (const email of people) {
     const theirs = subscriptions.filter((s) => s.email === email);
@@ -116,6 +137,7 @@ export function payload(reminder: Reminder): string {
 
 interface Household {
   members: string[];
+  roles: Record<string, unknown>;
   subscriptions: Subscription[];
 }
 
@@ -154,14 +176,17 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
           db.get(`households/${reminder.householdId}`),
           db.list(`households/${reminder.householdId}/pushSubscriptions`),
         ]);
-        const members = home ? decodeFields(home.fields).members : [];
+        const fields = home ? decodeFields(home.fields) : {};
+        const members = fields.members;
+        const roles = fields.roles;
         household = {
           members: Array.isArray(members) ? members.map(String) : [],
+          roles: roles && typeof roles === 'object' && !Array.isArray(roles) ? (roles as Record<string, unknown>) : {},
           subscriptions: subs.map(toSubscription).filter((s): s is Subscription => !!s),
         };
         households.set(reminder.householdId, household);
       }
-      let to = targets(reminder, household.members, household.subscriptions);
+      let to = targets(reminder, household.members, household.subscriptions, household.roles);
       // Claim before sending, and only when every push fits in this run: never send twice, never half.
       if (budget.remaining() < 1 + to.length) {
         if (handled > 0) throw new BudgetExhausted();
