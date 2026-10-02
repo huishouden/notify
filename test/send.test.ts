@@ -2,12 +2,13 @@ import { beforeEach, describe, expect, test } from 'bun:test';
 import { fromB64url, type Bytes } from '../src/b64';
 import { importKeyPair, deriveKeys } from '../src/webpush';
 import { resetTokenCache } from '../src/google';
-import { payload, roleOf, run, SUBREQUEST_BUDGET, targets, toReminder, toSubscription, type Subscription } from '../src/send';
+import { fairOrder, payload, PER_HOUSEHOLD_CAP, roleOf, run, SUBREQUEST_BUDGET, targets, toReminder, toSubscription, type Subscription } from '../src/send';
 import due from './fixtures/due-reminders.json';
 import household from './fixtures/household-h1.json';
 import subscriptions from './fixtures/subscriptions-h1.json';
 import tokenResponse from './fixtures/token-response.json';
-import preconditionFailed from './fixtures/precondition-failed.json';
+import batchWrite from './fixtures/batch-write-response.json';
+import indexMissing from './fixtures/index-missing.json';
 import v from './fixtures/rfc8291.json';
 import { json, stubFetch, testEnv, type Call, type Route } from './helpers';
 
@@ -17,17 +18,80 @@ const quiet = () => {};
 
 const isPush = (c: Call) => !c.url.startsWith('https://firestore.googleapis.com') && !c.url.startsWith('https://oauth2.');
 
-function routes(over: { due?: unknown; patch?: Route; push?: Route } = {}): Route[] {
+type Entry = { document?: { name: string; fields?: Record<string, unknown>; updateTime: string } };
+type Outcome = 'ok' | 'precondition' | 'notFound' | 'aborted' | 'internal';
+const OUTCOME = { ok: 0, precondition: 1, notFound: 2, aborted: 3, internal: 4 } as const;
+
+/** A batchWrite response giving each write the outcome `outcome` picks for its document. */
+function batchWriteResponse(writes: { update: { name: string } }[], outcome: (name: string) => Outcome | undefined) {
+  const picks = writes.map((w) => OUTCOME[outcome(w.update.name) ?? 'ok']);
+  return { writeResults: picks.map((i) => batchWrite.writeResults[i]), status: picks.map((i) => batchWrite.status[i]) };
+}
+
+const directionOf = (c: Call) => (c.body as { structuredQuery: { orderBy: { direction: string }[] } }).structuredQuery.orderBy[0].direction;
+
+/**
+ * Firestore, push services and Google's token endpoint. `due` is everything due, oldest first; each
+ * query answers with its 50-reminder window of it. Households other than h1 have one member device.
+ */
+function routes(over: { due?: Entry[]; newest?: (c: Call) => Response | undefined; write?: (name: string) => Outcome | undefined; batchWrite?: Route; subs?: (household: string) => unknown; push?: Route } = {}): Route[] {
+  const docs = (over.due ?? due).filter((e) => e.document);
   return [
     (c) => (c.url === 'https://oauth2.googleapis.com/token' ? json(tokenResponse) : undefined),
-    (c) => (c.url === `${DOCS}:runQuery` ? json(over.due ?? due) : undefined),
-    (c) => (c.method === 'GET' && c.url === `${DOCS}/households/h1` ? json(household) : undefined),
-    (c) => (c.method === 'GET' && c.url === `${DOCS}/households/h1/pushSubscriptions?pageSize=300` ? json(subscriptions) : undefined),
-    (c) => (c.method === 'PATCH' ? (over.patch?.(c) ?? json({})) : undefined),
+    (c) => {
+      if (c.url !== `${DOCS}:runQuery`) return undefined;
+      if (directionOf(c) === 'ASCENDING') return json([...docs.slice(0, 50), { readTime: '2026-01-01T12:00:00.000000Z' }]);
+      return over.newest?.(c) ?? json([...docs.slice(-50).reverse(), { readTime: '2026-01-01T12:00:00.000000Z' }]);
+    },
+    (c) => (c.url === `${DOCS}:batchWrite` ? (over.batchWrite?.(c) ?? json(batchWriteResponse((c.body as { writes: { update: { name: string } }[] }).writes, over.write ?? (() => 'ok')))) : undefined),
+    (c) => {
+      const m = c.method === 'GET' && c.url.match(/\/households\/([^/?]+)(\/pushSubscriptions\?pageSize=300)?$/);
+      if (!m) return undefined;
+      const [, id, subsPath] = m;
+      if (!subsPath) return json(id === 'h1' ? household : { ...household, name: household.name.replace('/h1', `/${id}`) });
+      return json(over.subs?.(id) ?? (id === 'h1' ? subscriptions : oneDevice(id)));
+    },
     (c) => (c.method === 'DELETE' ? json({}) : undefined),
     (c) => (isPush(c) ? (over.push?.(c) ?? new Response(null, { status: c.url.includes('gone.example.org') ? 410 : 201 })) : undefined),
   ];
 }
+
+/** A household's subscriptions: Sam's tablet only, at an endpoint of its own. */
+function oneDevice(householdId: string) {
+  const tablet = structuredClone(subscriptions.documents[2]);
+  tablet.name = tablet.name.replace('/h1/', `/${householdId}/`);
+  tablet.fields.endpoint.stringValue = `https://push.example.net/${householdId}-tablet`;
+  return { documents: [tablet] };
+}
+
+/** `count` devices for Sam in household h1. */
+function manyDevices(count: number) {
+  return {
+    documents: Array.from({ length: count }, (_, i) => {
+      const d = structuredClone(subscriptions.documents[2]);
+      d.name = d.name.replace('sam-tasks-tablet', `sam-device-${i}`);
+      d.fields.endpoint.stringValue = `https://push.example.net/device-${i}`;
+      return d;
+    }),
+  };
+}
+
+/** A due reminder like the pet one in the fixture, in another household, at another time. */
+function dueDoc(householdId: string, id: string, at: number): Entry {
+  const entry = structuredClone(due[0]) as Entry & { document: { fields: { at: { integerValue: string } } } };
+  entry.document.name = entry.document.name.replace('/h1/reminders/pet-c1-20260101-1155', `/${householdId}/reminders/${id}`);
+  entry.document.fields.at.integerValue = String(at);
+  return entry;
+}
+
+/** `count` reminders for one household, a minute apart, the newest at `newest`. */
+const backlog = (householdId: string, count: number, newest: number) =>
+  Array.from({ length: count }, (_, i) => dueDoc(householdId, `r${i}`, newest - (count - 1 - i) * 60_000));
+
+const byAt = (entries: Entry[]) => entries.filter((e) => e.document).sort((a, b) => Number((a.document!.fields!.at as { integerValue: string }).integerValue) - Number((b.document!.fields!.at as { integerValue: string }).integerValue));
+
+const writesOf = (calls: Call[]) => calls.filter((c) => c.url === `${DOCS}:batchWrite`).map((c) => (c.body as { writes: { update: { name: string; fields: unknown }; updateMask: unknown; currentDocument: unknown }[] }).writes);
+const shortName = (name: string) => name.split('/documents/')[1];
 
 async function decryptPush(body: Bytes): Promise<Record<string, unknown>> {
   const salt = body.slice(0, 16);
@@ -120,13 +184,26 @@ describe('toReminder', () => {
   });
 });
 
+describe('fairOrder', () => {
+  test('round-robin across households, ordered by their oldest due reminder, at most the cap each', () => {
+    const r = (h: string, id: string, at: number) => toReminder(dueDoc(h, id, at).document as never)!;
+    const mixed = [r('x', 'x1', NOW - 10), r('y', 'y1', NOW - 30), r('z', 'z1', NOW - 20), r('y', 'y2', NOW - 5), r('z', 'z2', NOW - 1), r('y', 'y3', NOW)];
+    const { order, capped } = fairOrder(mixed, 2);
+    expect(order.map((x) => x.id)).toEqual(['y1', 'z1', 'x1', 'y2', 'z2']);
+    expect(capped).toBe(1);
+  });
+});
+
 describe('run', () => {
   test('sends what is due, marks it sent, removes subscriptions the push service dropped', async () => {
     const { fetchImpl, calls } = stubFetch(routes());
     const stats = await run(await testEnv(), NOW, fetchImpl, quiet);
-    expect(stats).toEqual({ due: 3, sent: 2, pushed: 3, failed: 1, removed: 1, late: 1, invalid: 0, raced: 0, noDevices: 0, deferred: false });
+    // Both reminders reach the dropped laptop; it is deleted once.
+    expect(stats).toEqual({ due: 3, sent: 2, pushed: 3, failed: 2, removed: 1, late: 1, invalid: 0, raced: 0, noDevices: 0, capped: 0, deferred: false });
 
-    expect(calls.find((c) => c.url.endsWith(':runQuery'))!.body).toEqual({
+    const queries = calls.filter((c) => c.url.endsWith(':runQuery'));
+    expect(queries.map(directionOf)).toEqual(['ASCENDING', 'DESCENDING']);
+    expect(queries[0].body).toEqual({
       structuredQuery: {
         from: [{ collectionId: 'reminders', allDescendants: true }],
         where: {
@@ -142,81 +219,186 @@ describe('run', () => {
         limit: 50,
       },
     });
+    // One token request serves both queries.
+    expect(calls.filter((c) => c.url.startsWith('https://oauth2.'))).toHaveLength(1);
 
-    // Each claim is conditional on the version that was read, and sets only sent and sentAt.
-    const patches = calls.filter((c) => c.method === 'PATCH');
-    expect(patches).toHaveLength(3);
-    const first = new URL(patches[0].url);
-    expect(first.pathname).toEndWith('/households/h1/reminders/pet-c1-20260101-1155');
-    expect(first.searchParams.getAll('updateMask.fieldPaths')).toEqual(['sent', 'sentAt']);
-    expect(first.searchParams.get('currentDocument.updateTime')).toBe('2026-01-01T00:00:01.000001Z');
-    expect(patches[0].body).toEqual({ fields: { sent: { booleanValue: true }, sentAt: { integerValue: String(NOW) } } });
+    // One batchWrite marks the stale reminder and claims the others, each conditional on the version
+    // that was read, setting only sent and sentAt.
+    const [writes, ...more] = writesOf(calls);
+    expect(more).toHaveLength(0);
+    expect(writes.map((w) => shortName(w.update.name))).toEqual(['households/h2/reminders/pet-stale', 'households/h1/reminders/pet-c1-20260101-1155', 'households/h1/reminders/tasks-bins']);
+    expect(writes[1]).toEqual({
+      update: { name: due[0].document!.name, fields: { sent: { booleanValue: true }, sentAt: { integerValue: String(NOW) } } },
+      updateMask: { fieldPaths: ['sent', 'sentAt'] },
+      currentDocument: { updateTime: '2026-01-01T00:00:01.000001Z' },
+    });
+    expect(calls.filter((c) => c.method === 'PATCH')).toHaveLength(0);
 
     // The stale reminder (13 hours late, household h2) is marked without reading its household or pushing.
-    expect(new URL(patches[2].url).pathname).toEndWith('/households/h2/reminders/pet-stale');
-    expect(calls.some((c) => c.url.includes('/households/h2/') && c.method === 'GET')).toBe(false);
-
+    expect(calls.some((c) => c.url.includes('/households/h2') && c.method === 'GET')).toBe(false);
     // Household h1 is read once for both of its reminders.
     expect(calls.filter((c) => c.method === 'GET' && c.url === `${DOCS}/households/h1`)).toHaveLength(1);
 
-    // A reminder's pushes go out together, so their order within it is not fixed.
+    // Pushes go out together, after the claim, so their order is not fixed.
     const pushes = calls.filter(isPush);
-    expect(pushes.slice(0, 3).map((c) => c.url).sort()).toEqual([
+    expect(pushes.map((c) => c.url).sort()).toEqual([
+      'https://gone.example.org/sam-old-laptop',
       'https://gone.example.org/sam-old-laptop',
       'https://push.example.net/alex-phone-pet',
       'https://push.example.net/tablet-tasks',
+      'https://push.example.net/tablet-tasks',
     ]);
-    // The tasks reminder: Sam's tablet only; the dropped laptop is gone, Mallory isn't a member.
-    expect(pushes.slice(3).map((c) => c.url)).toEqual(['https://push.example.net/tablet-tasks']);
-    // Every push is claimed first.
-    expect(calls.indexOf(patches[0])).toBeLessThan(calls.indexOf(pushes[0]));
-    for (const p of pushes.slice(0, 3)) expect(await decryptPush(p.body as Bytes)).toEqual(JSON.parse(payload(reminders[0])));
-    expect(await decryptPush(pushes[3].body as Bytes)).toMatchObject({ title: 'Bins out tonight', tag: 'tasks-bins', app: 'tasks' });
+    const claim = calls.findIndex((c) => c.url.endsWith(':batchWrite'));
+    for (const p of pushes) expect(calls.indexOf(p)).toBeGreaterThan(claim);
+    const sent = await Promise.all(pushes.map((p) => decryptPush(p.body as Bytes)));
+    expect(sent.filter((m) => m.tag === 'pet-c1-20260101-1155')).toEqual(Array(3).fill(JSON.parse(payload(reminders[0]))));
+    expect(sent.filter((m) => m.tag === 'tasks-bins')).toEqual(Array(2).fill(expect.objectContaining({ title: 'Bins out tonight', app: 'tasks' })));
 
     const deletes = calls.filter((c) => c.method === 'DELETE');
     expect(deletes.map((c) => c.url)).toEqual([`${DOCS}/households/h1/pushSubscriptions/sam-tasks-old`]);
   });
 
   test('a reminder changed or claimed since it was read is not sent', async () => {
-    const { fetchImpl, calls } = stubFetch(
-      routes({ patch: (c) => (c.url.includes('pet-c1') ? json(preconditionFailed, 400) : undefined) }),
-    );
+    const { fetchImpl, calls } = stubFetch(routes({ write: (name) => (name.includes('pet-c1') ? 'precondition' : undefined) }));
     const stats = await run(await testEnv(), NOW, fetchImpl, quiet);
-    expect(stats).toMatchObject({ sent: 1, raced: 1, pushed: 1 });
+    expect(stats).toMatchObject({ sent: 1, raced: 1, pushed: 1, late: 1 });
     expect(calls.filter(isPush).map((c) => c.url).sort()).toEqual(['https://gone.example.org/sam-old-laptop', 'https://push.example.net/tablet-tasks']);
   });
 
-  test('other Firestore errors on the claim stop the run', async () => {
-    const { fetchImpl } = stubFetch(routes({ patch: () => json({ error: { message: 'boom', status: 'INTERNAL' } }, 500) }));
-    await expect(run(await testEnv(), NOW, fetchImpl, quiet)).rejects.toThrow('[500] Firestore markSent: boom');
+  test('send-once: deleted or contended claims are raced too, and nothing of theirs is pushed', async () => {
+    const { fetchImpl, calls } = stubFetch(routes({ write: (name) => (name.includes('pet-c1') ? 'notFound' : name.includes('tasks-bins') ? 'aborted' : undefined) }));
+    const stats = await run(await testEnv(), NOW, fetchImpl, quiet);
+    expect(stats).toMatchObject({ sent: 0, raced: 2, pushed: 0, late: 1 });
+    expect(calls.filter(isPush)).toHaveLength(0);
+  });
+
+  test('a batchWrite that fails outright stops the run before any push', async () => {
+    const { fetchImpl, calls } = stubFetch(routes({ batchWrite: () => json({ error: { code: 500, message: 'boom', status: 'INTERNAL' } }, 500) }));
+    await expect(run(await testEnv(), NOW, fetchImpl, quiet)).rejects.toThrow('[500] Firestore batchWrite: INTERNAL boom');
+    expect(calls.filter(isPush)).toHaveLength(0);
+  });
+
+  test('a write failing for another reason is not pushed; the rest go out, then the run fails', async () => {
+    const { fetchImpl, calls } = stubFetch(routes({ write: (name) => (name.includes('pet-c1') ? 'internal' : undefined) }));
+    await expect(run(await testEnv(), NOW, fetchImpl, quiet)).rejects.toThrow('Firestore batchWrite: 1 of 3 writes failed (code 13: Internal error encountered.)');
+    expect(calls.filter(isPush).map((c) => c.url).sort()).toEqual(['https://gone.example.org/sam-old-laptop', 'https://push.example.net/tablet-tasks']);
+  });
+
+  test('late and malformed reminders are marked in the same single batchWrite; raced marks are counted', async () => {
+    const late = backlog('h3', 4, NOW - 13 * 3600_000);
+    const broken = structuredClone(dueDoc('h4', 'no-title', NOW - 1000));
+    delete broken.document!.fields!.title;
+    const { fetchImpl, calls } = stubFetch(
+      routes({ due: byAt([...late, broken, ...due]), write: (name) => (name.endsWith('/h3/reminders/r0') ? 'precondition' : name.endsWith('/no-title') ? 'notFound' : undefined) }),
+    );
+    const stats = await run(await testEnv(), NOW, fetchImpl, quiet);
+    expect(stats).toMatchObject({ due: 8, late: 4, invalid: 0, raced: 2, sent: 2 });
+    const batches = writesOf(calls);
+    expect(batches).toHaveLength(1);
+    expect(batches[0].map((w) => shortName(w.update.name))).toEqual([
+      'households/h3/reminders/r0',
+      'households/h3/reminders/r1',
+      'households/h3/reminders/r2',
+      'households/h2/reminders/pet-stale',
+      'households/h3/reminders/r3',
+      'households/h4/reminders/no-title',
+      'households/h1/reminders/pet-c1-20260101-1155',
+      'households/h1/reminders/tasks-bins',
+    ]);
+    expect(calls.some((c) => c.method === 'GET' && /households\/h[34]/.test(c.url))).toBe(false);
+
+    const ok = stubFetch(routes({ due: byAt([broken, ...due]) }));
+    expect(await run(await testEnv(), NOW, ok.fetchImpl, quiet)).toMatchObject({ invalid: 1, late: 1, raced: 0 });
   });
 
   test('a failed push is counted and logged; the subscription stays', async () => {
     const lines: string[] = [];
     const { fetchImpl, calls } = stubFetch(routes({ push: (c) => (c.url.includes('alex-phone-pet') ? new Response(null, { status: 503 }) : undefined) }));
     const stats = await run(await testEnv(), NOW, fetchImpl, (l) => lines.push(l));
-    expect(stats).toMatchObject({ pushed: 2, failed: 2, removed: 1 });
+    expect(stats).toMatchObject({ pushed: 2, failed: 3, removed: 1 });
     expect(lines).toEqual(['push to push.example.net failed: 503']);
     expect(calls.filter((c) => c.method === 'DELETE')).toHaveLength(1);
   });
 
+  test('one household with a backlog shares the run: round-robin, at most the cap, the rest counted as capped', async () => {
+    // Household a: 40 due, oldest first. Household b: one, the newest.
+    const a = backlog('a', 40, NOW - 60_000);
+    const b = dueDoc('b', 'only', NOW - 1000);
+    const { fetchImpl, calls } = stubFetch(routes({ due: [...a, b] }));
+    const stats = await run(await testEnv(), NOW, fetchImpl, quiet);
+    expect(stats).toMatchObject({ due: 41, sent: PER_HOUSEHOLD_CAP + 1, pushed: PER_HOUSEHOLD_CAP + 1, capped: 40 - PER_HOUSEHOLD_CAP, deferred: true });
+    const [claims] = writesOf(calls);
+    expect(claims.map((w) => shortName(w.update.name).replace('households/', ''))).toEqual([
+      'a/reminders/r0',
+      'b/reminders/only',
+      ...Array.from({ length: PER_HOUSEHOLD_CAP - 1 }, (_, i) => `a/reminders/r${i + 1}`),
+    ]);
+    expect(calls.filter(isPush).map((c) => c.url)).toContain('https://push.example.net/b-tablet');
+  });
+
+  test('a backlog that fills the whole oldest-first window still lets the newest household through', async () => {
+    const a = backlog('a', 60, NOW - 60_000);
+    const b = dueDoc('b', 'only', NOW - 1000);
+    const { fetchImpl, calls } = stubFetch(routes({ due: [...a, b] }));
+    const stats = await run(await testEnv(), NOW, fetchImpl, quiet);
+    const [oldest] = calls.filter((c) => c.url.endsWith(':runQuery'));
+    expect(oldest.body).toMatchObject({ structuredQuery: { limit: 50 } });
+    // The oldest-first window is all household a; b comes from the newest-first one.
+    expect(stats).toMatchObject({ due: 61, sent: PER_HOUSEHOLD_CAP + 1, capped: 50, deferred: true });
+    expect(writesOf(calls)[0].map((w) => shortName(w.update.name))).toContain('households/b/reminders/only');
+  });
+
+  test('falls back to the oldest-first window, with one log line, while the newest-first index is missing', async () => {
+    const lines: string[] = [];
+    const { fetchImpl, calls } = stubFetch(routes({ newest: () => json(indexMissing, 400) }));
+    const stats = await run(await testEnv(), NOW, fetchImpl, (l) => lines.push(l));
+    expect(stats).toMatchObject({ due: 3, sent: 2, late: 1, deferred: false });
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toStartWith('newest-first query failed, using the oldest-first window only: [400] Firestore runQuery: FAILED_PRECONDITION The query requires an index.');
+    expect(calls.filter(isPush)).toHaveLength(5);
+  });
+
   test('stops within the subrequest budget, never claiming a reminder it cannot finish', async () => {
-    const many = Array.from({ length: 50 }, (_, i) => {
-      const r = structuredClone(due[0]);
-      r.document!.name = r.document!.name.replace('pet-c1-20260101-1155', `pet-${i}`);
-      return r;
-    });
+    // Household h1: 50 reminders of 3 devices each, one of them dropped. Token, two queries, two
+    // household reads and the batchWrite (6), then 3 pushes for each of the 10 the cap allows, and
+    // the one 410 delete.
+    const many = backlog('h1', 50, NOW - 1000);
     const { fetchImpl, calls } = stubFetch(routes({ due: many }));
     const stats = await run(await testEnv(), NOW, fetchImpl, quiet);
-    expect(stats.deferred).toBe(true);
-    expect(calls.length).toBeLessThanOrEqual(SUBREQUEST_BUDGET);
-    // Token, query and two household reads (4); the first reminder: claim, 3 pushes and the 410
-    // delete (5); then claim and 2 pushes each: 12 more fit exactly in 45.
-    const patches = calls.filter((c) => c.method === 'PATCH').length;
-    expect(stats.sent).toBe(patches);
-    expect(patches).toBe(13);
-    expect(calls.filter(isPush).length).toBe(3 + 12 * 2);
-    expect(calls.length).toBe(SUBREQUEST_BUDGET);
+    expect(stats).toMatchObject({ sent: 10, pushed: 20, failed: 10, removed: 1, capped: 40, deferred: true });
+    expect(calls).toHaveLength(6 + 30 + 1);
+  });
+
+  test('many households: every run fits in the budget, and each claimed reminder gets all its pushes', async () => {
+    const scenarios: { name: string; due: Entry[]; subs?: (h: string) => unknown }[] = [
+      { name: '30 households of 2, one device each', due: byAt(Array.from({ length: 30 }, (_, h) => backlog(`h${h + 10}`, 2, NOW - h * 1000)).flat()) },
+      { name: '20 households of 5, three devices each, one dropped', due: byAt(Array.from({ length: 20 }, (_, h) => backlog(`h${h + 10}`, 5, NOW - h * 1000)).flat()), subs: () => subscriptions },
+      { name: 'one household of 2, plus 49 late', due: byAt([...backlog('late', 49, NOW - 13 * 3600_000), ...backlog('h5', 2, NOW)]) },
+      { name: 'one reminder, 12 devices, and 40 households', due: byAt([dueDoc('h1', 'big', NOW - 3_600_000), ...Array.from({ length: 40 }, (_, h) => dueDoc(`h${h + 10}`, 'r', NOW - h * 1000))]), subs: (h) => (h === 'h1' ? manyDevices(12) : undefined) },
+    ];
+    for (const s of scenarios) {
+      resetTokenCache();
+      const { fetchImpl, calls } = stubFetch(routes({ due: s.due, subs: s.subs }));
+      const stats = await run(await testEnv(), NOW, fetchImpl, quiet);
+      expect({ name: s.name, within: calls.length <= SUBREQUEST_BUDGET }).toEqual({ name: s.name, within: true });
+      // Each claimed reminder went to all of its devices: the budget never cut a reminder short.
+      const claims = writesOf(calls)[0].filter((w) => !w.update.name.includes('/late/'));
+      const perReminder = s.subs?.('h10') === subscriptions ? 3 : 1;
+      const devices = claims.reduce((n, w) => n + (w.update.name.includes('/big') ? 12 : perReminder), 0);
+      expect({ name: s.name, pushes: calls.filter(isPush).length }).toEqual({ name: s.name, pushes: devices });
+      expect(stats.sent).toBe(claims.length);
+      expect(stats.deferred).toBe(s.name.includes('late') ? false : true);
+    }
+  });
+
+  test('a reminder with more devices than any run allows reaches as many as fit', async () => {
+    const lines: string[] = [];
+    const { fetchImpl, calls } = stubFetch(routes({ due: [due[0]], subs: () => manyDevices(60) }));
+    const stats = await run(await testEnv(), NOW, fetchImpl, (l) => lines.push(l));
+    // Token, two queries, two household reads and the batchWrite leave 39.
+    expect(stats).toMatchObject({ sent: 1, pushed: 39 });
+    expect(lines).toEqual(['reminder has 60 devices; sending to 39']);
+    expect(calls).toHaveLength(SUBREQUEST_BUDGET);
   });
 
   test('says which setting is missing', async () => {
