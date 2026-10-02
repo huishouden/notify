@@ -1,23 +1,16 @@
-import { run, type Env, type RunStats } from './send';
-import { heartbeatEvent, sendHeartbeat, type HeartbeatEnv } from './heartbeat';
+import { run, type Env } from './send';
+import { monitoredRun, type HeartbeatEnv } from './heartbeat';
 
 export default {
   async scheduled(controller: ScheduledController, env: Env & HeartbeatEnv, ctx: ExecutionContext): Promise<void> {
-    const started = Date.now();
+    const fetchImpl: typeof fetch = (input, init) => fetch(input, init);
     ctx.waitUntil(
-      (async () => {
-        let stats: RunStats | null = null;
-        let error: unknown = null;
-        try {
-          stats = await run(env, controller.scheduledTime, (input, init) => fetch(input, init));
-          console.log(JSON.stringify(stats));
-        } catch (e) {
-          error = e;
-        }
-        await sendHeartbeat(env, heartbeatEvent(stats, error, Date.now() - started, controller.scheduledTime));
-        // Rethrown so Cloudflare still records the run as failed.
-        if (error) throw error;
-      })(),
+      monitoredRun(env, controller.scheduledTime, {
+        run: () => run(env, controller.scheduledTime, fetchImpl),
+        fetch: fetchImpl,
+        now: () => Date.now(),
+        log: (line) => console.log(line),
+      }),
     );
   },
 
