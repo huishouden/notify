@@ -18,7 +18,9 @@ Every 5 minutes:
    `reminders`, `sent == false`, `at <= now`) twice at once: the 50 oldest and the 50 newest. One
    household's backlog can fill the oldest 50 on its own; the newest 50 still reach everyone
    else. While the newest-first index is missing or building, the run logs one line and uses the
-   oldest 50 alone.
+   oldest 50 alone. A third query reads the 50 oldest due `personalReminders` (reminders for named
+   members only, pwa-kit `./audience`: Health's medicine reminders); they join the same pool. While
+   its index is missing, the run logs one line and sends the shared ones.
 3. Shares the run fairly between households: each household's due reminders oldest first, the
    households in order of their oldest due reminder, then round by round, every household's first
    reminder before any household's second. At most 10 per household per run; the rest are counted
@@ -29,7 +31,8 @@ Every 5 minutes:
    notifications on in the reminder's app, or all their devices when they did that only in other
    apps. A device shared by two recipients (the household tablet) gets one notification. A private
    reminder (`private` not `false`, or from Spending or Bills) goes only to admins and members,
-   never to helpers or kids (huishouden/rules README "Roles").
+   never to helpers or kids (huishouden/rules README "Roles"). A personal reminder goes only to
+   its recipients who are members, named in its `audience` and not kids, whatever its `private` flag.
 
    A reminder is taken only when all of its devices fit in what is left of the run's 45
    requests; the rest wait for the next run, and a household's later reminders wait behind an
@@ -70,14 +73,14 @@ tapping it opens `url` in the app.
 
 - **5-minute granularity.** A reminder due at 08:00 arrives between 08:00 and about 08:05.
 - **Cloudflare free plan**: 100,000 requests a day (the schedule uses 288), 50 outgoing requests
-  per run and 10 ms of CPU per run. A run uses one request for the token, two for the queries,
+  per run and 10 ms of CPU per run. A run uses one request for the token, three for the queries,
   two per household, one `batchWrite` and one per device, plus deletes of dropped subscriptions
   when requests are left, and stays within 45; whatever didn't fit goes out 5 minutes later.
   The encryption is done by the runtime's native WebCrypto, well inside the CPU limit for the
   number of devices a run can reach.
-- **Firestore free tier**: each run reads at most 100 due reminders (the two windows overlap
+- **Firestore free tier**: each run reads at most 150 due reminders (the shared windows overlap
   when fewer are due) plus each involved household and its subscriptions, and an empty run costs
-  two reads (one per query); about 600 reads a day when idle, against 50,000.
+  three reads (one per query); about 900 reads a day when idle, against 50,000.
 - **iPhone and iPad** only show notifications for an app added to the Home Screen (Share > Add to
   Home Screen), on iOS/iPadOS 16.4 or later. In Safari tabs, and on older versions, there is no Web
   Push. `pushSupport()` in the kit says which case a device is in, so the app can explain.
