@@ -10,6 +10,31 @@ export interface Env {
   GOOGLE_SERVICE_ACCOUNT: string;
   /** Secret: the VAPID private key (base64url P-256 scalar). */
   VAPID_PRIVATE_KEY: string;
+  /**
+   * Hosts a notification may link to, space-separated; `*` matches one name part
+   * (`huishouden-*.web.app`). A link anywhere else opens the app's own home instead. Unset: any https link.
+   */
+  LINK_HOSTS?: string;
+}
+
+/** `LINK_HOSTS` as patterns. */
+export function linkHosts(value: string | undefined): RegExp[] {
+  return (value ?? '')
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((h) => new RegExp(`^${h.toLowerCase().replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[a-z0-9-]+')}$`));
+}
+
+/** The link a notification opens: https on an allowed host (when hosts are set), else `/`, the app's home. */
+export function safeLink(url: unknown, hosts: RegExp[] = []): string {
+  if (typeof url !== 'string' || !/^https:\/\//.test(url)) return '/';
+  if (!hosts.length) return url;
+  try {
+    const { hostname } = new URL(url);
+    return hosts.some((h) => h.test(hostname)) ? url : '/';
+  } catch {
+    return '/';
+  }
 }
 
 /** Reminders further overdue than this are marked sent without a notification (after an outage). */
@@ -84,14 +109,14 @@ export function budgeted(fetchImpl: Fetch, limit: number) {
   return { fetch: f, remaining: () => limit - used };
 }
 
-export function toReminder(doc: RestDocument): Reminder | null {
+export function toReminder(doc: RestDocument, hosts: RegExp[] = []): Reminder | null {
   const path = documentPath(doc.name);
   if (path.length !== 4 || path[0] !== 'households' || path[2] !== 'reminders') return null;
   const d = decodeFields(doc.fields);
   if (typeof d.title !== 'string' || !d.title || typeof d.at !== 'number' || typeof d.app !== 'string') return null;
   const recipients = d.recipients === 'all' ? 'all' : Array.isArray(d.recipients) ? d.recipients.map((e) => String(e).toLowerCase()) : null;
   if (!recipients) return null;
-  const url = typeof d.url === 'string' && /^https:\/\//.test(d.url) ? d.url : '/';
+  const url = safeLink(d.url, hosts);
   const isPrivate = d.private !== false || MONEY_APPS.includes(d.app);
   return { id: path[3], householdId: path[1], app: d.app, title: d.title, body: typeof d.body === 'string' ? d.body : '', at: d.at, url, recipients, private: isPrivate, doc };
 }
@@ -193,6 +218,7 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
   const budget = budgeted(fetchImpl, SUBREQUEST_BUDGET);
   // Both queries start together; sharing the pending token keeps that to one token request.
   let token: Promise<string> | undefined;
+  const hosts = linkHosts(env.LINK_HOSTS);
   const db = new Firestore(env.FIREBASE_PROJECT_ID, () => (token ??= accessToken(sa, budget.fetch, now)), budget.fetch);
 
   try {
@@ -214,7 +240,7 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
     const marks: { doc: RestDocument; kind: 'late' | 'invalid' }[] = [];
     const sendable: Reminder[] = [];
     for (const doc of docs.values()) {
-      const reminder = toReminder(doc);
+      const reminder = toReminder(doc, hosts);
       // Malformed: marked so it isn't read again every five minutes.
       if (!reminder) marks.push({ doc, kind: 'invalid' });
       else if (now - reminder.at > MAX_LATE_MS) marks.push({ doc, kind: 'late' });
