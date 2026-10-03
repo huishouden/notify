@@ -1,0 +1,24 @@
+[
+  {
+    "document": {
+      "name": "projects/demo-huishouden/databases/(default)/documents/households/h1/personalReminders/health-dose-p1-0800",
+      "fields": {
+        "app": { "stringValue": "health" },
+        "title": { "stringValue": "Medicine for Nan" },
+        "body": { "stringValue": "8:00 AM: Example-pril 10 mg" },
+        "at": { "integerValue": "1767268740000" },
+        "url": { "stringValue": "https://huishouden-piekstra.web.app/health/?person=p1" },
+        "recipients": { "arrayValue": { "values": [{ "stringValue": "sam@example.com" }, { "stringValue": "outsider@example.com" }] } },
+        "audience": { "arrayValue": { "values": [{ "stringValue": "alex@example.com" }, { "stringValue": "sam@example.com" }] } },
+        "ref": { "stringValue": "health:dose:p1" },
+        "private": { "booleanValue": true },
+        "sent": { "booleanValue": false },
+        "createdAt": { "integerValue": "1767182400000" },
+        "by": { "stringValue": "alex@example.com" }
+      },
+      "createTime": "2026-01-01T00:00:00.000000Z",
+      "updateTime": "2026-01-01T00:00:02.000001Z"
+    },
+    "readTime": "2026-01-01T12:00:00.000000Z"
+  }
+]
