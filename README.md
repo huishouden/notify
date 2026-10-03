@@ -145,6 +145,10 @@ bunx wrangler deploy
 bunx wrangler tail          # live logs: one line of counts per run
 ```
 
+`LINK_HOSTS` in `wrangler.toml` lists where a notification may lead (space-separated, `*` for one
+name part): the suite's one site, where every app lives under its own path, and the old per-app
+addresses, which redirect there. A reminder linking anywhere else opens the app's home instead.
+
 `FIREBASE_PROJECT_ID` in `wrangler.toml` names the project (public, like the apps' web config). To
 try a run locally: put the two secrets in `.dev.vars` (git-ignored), `bun run dev`, then open
 `http://localhost:8787/__scheduled`.

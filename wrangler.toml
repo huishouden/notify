@@ -20,5 +20,8 @@ FIREBASE_PROJECT_ID = "huishouden-piekstra"
 # From `bun run vapid`; the same key goes in each app repo's VITE_VAPID_PUBLIC_KEY variable.
 VAPID_PUBLIC_KEY = "BORorVipYYfZaXFZA_XtfBu3CQLg-I3JuC_OC5avpprgqMdz3NYLJP6UdCt-5yjbgRgB8xPJPBSMTRuJl3sHIX0"
 VAPID_SUBJECT = "https://github.com/huishouden/notify"
+# Where a notification may lead: the suite's one site (every app under its own path), and the old
+# per-app addresses, which redirect there. Anything else opens the app's home instead.
+LINK_HOSTS = "huishouden-piekstra.web.app huishouden-*.web.app"
 # New Relic account for the NotifyRun heartbeat (public; the ingest key is a secret).
 NEW_RELIC_ACCOUNT_ID = "8578044"
