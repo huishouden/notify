@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, test } from 'bun:test';
 import { fromB64url, type Bytes } from '../src/b64';
 import { importKeyPair, deriveKeys } from '../src/webpush';
 import { resetTokenCache } from '../src/google';
-import { fairOrder, payload, PER_HOUSEHOLD_CAP, roleOf, run, SUBREQUEST_BUDGET, targets, toReminder, toSubscription, type Subscription } from '../src/send';
+import { fairOrder, linkHosts, payload, PER_HOUSEHOLD_CAP, roleOf, run, safeLink, SUBREQUEST_BUDGET, targets, toReminder, toSubscription, type Subscription } from '../src/send';
 import due from './fixtures/due-reminders.json';
 import household from './fixtures/household-h1.json';
 import subscriptions from './fixtures/subscriptions-h1.json';
@@ -171,6 +171,26 @@ describe('toReminder', () => {
     const doc = structuredClone(due[0].document!) as never as Parameters<typeof toReminder>[0];
     doc.fields!.url = { stringValue: 'javascript:alert(1)' };
     expect(toReminder(doc)!.url).toBe('/');
+  });
+
+  test('with LINK_HOSTS, only links to those hosts are sent', () => {
+    const hosts = linkHosts('example-family.web.app example-*.web.app');
+    const doc = structuredClone(due[0].document!) as never as Parameters<typeof toReminder>[0];
+    const linkOf = (url: string) => {
+      doc.fields!.url = { stringValue: url };
+      return toReminder(doc, hosts)!.url;
+    };
+    expect(linkOf('https://example-family.web.app/pet/meds/c1')).toBe('https://example-family.web.app/pet/meds/c1');
+    expect(linkOf('https://example-pet.web.app/?tab=care')).toBe('https://example-pet.web.app/?tab=care');
+    expect(linkOf('https://evil.example.com/')).toBe('/');
+    expect(linkOf('https://example-family.web.app.evil.example.com/')).toBe('/');
+    expect(linkOf('https://x.example-pet.web.app/')).toBe('/');
+    expect(linkOf('http://example-family.web.app/')).toBe('/');
+  });
+
+  test('safeLink without hosts keeps any https link', () => {
+    expect(safeLink('https://anything.example.org/x')).toBe('https://anything.example.org/x');
+    expect(safeLink(42)).toBe('/');
   });
 
   test('payload is what the kit service worker reads', () => {
