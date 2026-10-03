@@ -63,6 +63,12 @@ export interface Reminder {
    * flag existed (the rules treat that as private to helpers and kids too).
    */
   private: boolean;
+  /**
+   * From `personalReminders` (pwa-kit `./audience`): only the members in `audience` may read it, so
+   * it goes only to recipients who are members, in the audience and not kids; `private` is ignored.
+   */
+  personal: boolean;
+  audience: string[];
   doc: RestDocument;
 }
 
@@ -111,14 +117,17 @@ export function budgeted(fetchImpl: Fetch, limit: number) {
 
 export function toReminder(doc: RestDocument, hosts: RegExp[] = []): Reminder | null {
   const path = documentPath(doc.name);
-  if (path.length !== 4 || path[0] !== 'households' || path[2] !== 'reminders') return null;
+  if (path.length !== 4 || path[0] !== 'households' || (path[2] !== 'reminders' && path[2] !== 'personalReminders')) return null;
+  const personal = path[2] === 'personalReminders';
   const d = decodeFields(doc.fields);
   if (typeof d.title !== 'string' || !d.title || typeof d.at !== 'number' || typeof d.app !== 'string') return null;
-  const recipients = d.recipients === 'all' ? 'all' : Array.isArray(d.recipients) ? d.recipients.map((e) => String(e).toLowerCase()) : null;
+  const recipients = d.recipients === 'all' && !personal ? 'all' : Array.isArray(d.recipients) ? d.recipients.map((e) => String(e).toLowerCase()) : null;
   if (!recipients) return null;
+  const audience = Array.isArray(d.audience) ? d.audience.map((e) => String(e).toLowerCase()) : [];
+  if (personal && audience.length === 0) return null;
   const url = safeLink(d.url, hosts);
   const isPrivate = d.private !== false || MONEY_APPS.includes(d.app);
-  return { id: path[3], householdId: path[1], app: d.app, title: d.title, body: typeof d.body === 'string' ? d.body : '', at: d.at, url, recipients, private: isPrivate, doc };
+  return { id: path[3], householdId: path[1], app: d.app, title: d.title, body: typeof d.body === 'string' ? d.body : '', at: d.at, url, recipients, private: isPrivate, personal, audience, doc };
 }
 
 export function toSubscription(doc: RestDocument): Subscription | null {
@@ -153,7 +162,11 @@ export function roleOf(email: string, members: string[], roles: Record<string, u
 export function targets(reminder: Reminder, members: string[], subscriptions: Subscription[], roles: Record<string, unknown> = {}): Subscription[] {
   const memberSet = new Set(members.map((m) => m.toLowerCase()));
   const everyone = reminder.recipients === 'all' ? [...memberSet] : reminder.recipients.filter((e) => memberSet.has(e));
-  const people = reminder.private ? everyone.filter((e) => ['admin', 'member'].includes(roleOf(e, members, roles))) : everyone;
+  const people = reminder.personal
+    ? everyone.filter((e) => reminder.audience.includes(e) && roleOf(e, members, roles) !== 'kid')
+    : reminder.private
+      ? everyone.filter((e) => ['admin', 'member'].includes(roleOf(e, members, roles)))
+      : everyone;
   const chosen = new Map<string, Subscription>();
   for (const email of people) {
     const theirs = subscriptions.filter((s) => s.email === email);
@@ -223,19 +236,26 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
 
   try {
     // Oldest first alone can be filled by one household's backlog; newest first reaches the rest.
-    const [oldest, newest] = await Promise.all([
+    const [oldest, newest, personal] = await Promise.all([
       db.dueReminders(now, BATCH, 'ASCENDING'),
       db.dueReminders(now, BATCH, 'DESCENDING').catch((error: unknown) => {
         if (error instanceof BudgetExhausted) throw error;
         log(`newest-first query failed, using the oldest-first window only: ${error instanceof Error ? error.message.slice(0, 200) : String(error)}`);
         return null;
       }),
+      // Reminders for named members only; while its index is missing or building, the run goes on without them.
+      db.dueReminders(now, BATCH, 'ASCENDING', 'personalReminders').catch((error: unknown) => {
+        if (error instanceof BudgetExhausted) throw error;
+        log(`personal reminders query failed, sending shared reminders only: ${error instanceof Error ? error.message.slice(0, 200) : String(error)}`);
+        return [] as RestDocument[];
+      }),
     ]);
     const docs = new Map<string, RestDocument>();
     for (const doc of [...oldest, ...(newest ?? [])]) docs.set(doc.name, doc);
-    stats.due = docs.size;
     // Windows that overlap cover everything due between them.
-    const unread = oldest.length >= BATCH && (!newest || docs.size === oldest.length + newest.length);
+    const unread = (oldest.length >= BATCH && (!newest || docs.size === oldest.length + newest.length)) || personal.length >= BATCH;
+    for (const doc of personal) docs.set(doc.name, doc);
+    stats.due = docs.size;
 
     const marks: { doc: RestDocument; kind: 'late' | 'invalid' }[] = [];
     const sendable: Reminder[] = [];

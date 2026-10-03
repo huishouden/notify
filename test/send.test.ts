@@ -9,6 +9,7 @@ import subscriptions from './fixtures/subscriptions-h1.json';
 import tokenResponse from './fixtures/token-response.json';
 import batchWrite from './fixtures/batch-write-response.json';
 import indexMissing from './fixtures/index-missing.json';
+import personalDue from './fixtures/personal-reminders.json';
 import v from './fixtures/rfc8291.json';
 import { json, stubFetch, testEnv, type Call, type Route } from './helpers';
 
@@ -28,18 +29,20 @@ function batchWriteResponse(writes: { update: { name: string } }[], outcome: (na
   return { writeResults: picks.map((i) => batchWrite.writeResults[i]), status: picks.map((i) => batchWrite.status[i]) };
 }
 
+const collectionOf = (c: Call) => (c.body as { structuredQuery: { from: { collectionId: string }[] } }).structuredQuery.from[0].collectionId;
 const directionOf = (c: Call) => (c.body as { structuredQuery: { orderBy: { direction: string }[] } }).structuredQuery.orderBy[0].direction;
 
 /**
  * Firestore, push services and Google's token endpoint. `due` is everything due, oldest first; each
  * query answers with its 50-reminder window of it. Households other than h1 have one member device.
  */
-function routes(over: { due?: Entry[]; newest?: (c: Call) => Response | undefined; write?: (name: string) => Outcome | undefined; batchWrite?: Route; subs?: (household: string) => unknown; push?: Route } = {}): Route[] {
+function routes(over: { personal?: (c: Call) => Response | undefined; due?: Entry[]; newest?: (c: Call) => Response | undefined; write?: (name: string) => Outcome | undefined; batchWrite?: Route; subs?: (household: string) => unknown; push?: Route } = {}): Route[] {
   const docs = (over.due ?? due).filter((e) => e.document);
   return [
     (c) => (c.url === 'https://oauth2.googleapis.com/token' ? json(tokenResponse) : undefined),
     (c) => {
       if (c.url !== `${DOCS}:runQuery`) return undefined;
+      if (collectionOf(c) === 'personalReminders') return over.personal?.(c) ?? json([{ readTime: '2026-01-01T12:00:00.000000Z' }]);
       if (directionOf(c) === 'ASCENDING') return json([...docs.slice(0, 50), { readTime: '2026-01-01T12:00:00.000000Z' }]);
       return over.newest?.(c) ?? json([...docs.slice(-50).reverse(), { readTime: '2026-01-01T12:00:00.000000Z' }]);
     },
@@ -204,6 +207,30 @@ describe('toReminder', () => {
   });
 });
 
+describe('reminders for named members only', () => {
+  const doc = personalDue[0].document as unknown as Parameters<typeof toReminder>[0];
+  const withFields = (fields: Record<string, unknown>) => ({ ...doc, fields: { ...doc.fields, ...fields } }) as Parameters<typeof toReminder>[0];
+
+  test('reads a personalReminders document with its audience', () => {
+    const r = toReminder(doc)!;
+    expect(r).toMatchObject({ householdId: 'h1', app: 'health', personal: true, audience: ['alex@example.com', 'sam@example.com'], recipients: ['sam@example.com', 'outsider@example.com'] });
+    expect(toReminder(withFields({ recipients: { stringValue: 'all' } }))).toBeNull();
+    expect(toReminder(withFields({ audience: { arrayValue: {} } }))).toBeNull();
+  });
+
+  test('goes only to recipients who are members, in the audience and not kids, private or not', () => {
+    const r = toReminder(doc)!;
+    const subs = (subscriptions.documents as unknown as Parameters<typeof toSubscription>[0][]).map(toSubscription).filter((s): s is Subscription => !!s);
+    const members = ['alex@example.com', 'sam@example.com', 'kid@example.com'];
+    expect([...new Set(targets(r, members, subs).map((s) => s.email))]).toEqual(['sam@example.com']);
+    // Sam as a helper still gets it: the audience, not the private flag, decides.
+    expect([...new Set(targets(r, members, subs, { 'sam@example.com': 'helper' }).map((s) => s.email))]).toEqual(['sam@example.com']);
+    expect(targets(r, members, subs, { 'sam@example.com': 'kid' })).toEqual([]);
+    // A recipient left out of the audience gets nothing.
+    expect(targets({ ...r, audience: ['alex@example.com'] }, members, subs)).toEqual([]);
+  });
+});
+
 describe('fairOrder', () => {
   test('round-robin across households, ordered by their oldest due reminder, at most the cap each', () => {
     const r = (h: string, id: string, at: number) => toReminder(dueDoc(h, id, at).document as never)!;
@@ -222,7 +249,7 @@ describe('run', () => {
     expect(stats).toEqual({ due: 3, sent: 2, pushed: 3, failed: 2, removed: 1, late: 1, invalid: 0, raced: 0, noDevices: 0, capped: 0, deferred: false });
 
     const queries = calls.filter((c) => c.url.endsWith(':runQuery'));
-    expect(queries.map(directionOf)).toEqual(['ASCENDING', 'DESCENDING']);
+    expect(queries.map((q) => `${collectionOf(q)} ${directionOf(q)}`)).toEqual(['reminders ASCENDING', 'reminders DESCENDING', 'personalReminders ASCENDING']);
     expect(queries[0].body).toEqual({
       structuredQuery: {
         from: [{ collectionId: 'reminders', allDescendants: true }],
@@ -379,14 +406,14 @@ describe('run', () => {
   });
 
   test('stops within the subrequest budget, never claiming a reminder it cannot finish', async () => {
-    // Household h1: 50 reminders of 3 devices each, one of them dropped. Token, two queries, two
-    // household reads and the batchWrite (6), then 3 pushes for each of the 10 the cap allows, and
+    // Household h1: 50 reminders of 3 devices each, one of them dropped. Token, three queries, two
+    // household reads and the batchWrite (7), then 3 pushes for each of the 10 the cap allows, and
     // the one 410 delete.
     const many = backlog('h1', 50, NOW - 1000);
     const { fetchImpl, calls } = stubFetch(routes({ due: many }));
     const stats = await run(await testEnv(), NOW, fetchImpl, quiet);
     expect(stats).toMatchObject({ sent: 10, pushed: 20, failed: 10, removed: 1, capped: 40, deferred: true });
-    expect(calls).toHaveLength(6 + 30 + 1);
+    expect(calls).toHaveLength(7 + 30 + 1);
   });
 
   test('many households: every run fits in the budget, and each claimed reminder gets all its pushes', async () => {
@@ -415,10 +442,32 @@ describe('run', () => {
     const lines: string[] = [];
     const { fetchImpl, calls } = stubFetch(routes({ due: [due[0]], subs: () => manyDevices(60) }));
     const stats = await run(await testEnv(), NOW, fetchImpl, (l) => lines.push(l));
-    // Token, two queries, two household reads and the batchWrite leave 39.
-    expect(stats).toMatchObject({ sent: 1, pushed: 39 });
-    expect(lines).toEqual(['reminder has 60 devices; sending to 39']);
+    // Token, three queries, two household reads and the batchWrite leave 38.
+    expect(stats).toMatchObject({ sent: 1, pushed: 38 });
+    expect(lines).toEqual(['reminder has 60 devices; sending to 38']);
     expect(calls).toHaveLength(SUBREQUEST_BUDGET);
+  });
+
+  test('sends due personal reminders from the same run, marked in the same batchWrite', async () => {
+    const { fetchImpl, calls } = stubFetch(routes({ personal: () => json(personalDue) }));
+    const stats = await run(await testEnv(), NOW, fetchImpl, quiet);
+    expect(stats.sent).toBe(3);
+    const [writes] = writesOf(calls);
+    expect(writes.map((w) => shortName(w.update.name))).toContain('households/h1/personalReminders/health-dose-p1-0800');
+    // Only Sam's two devices on top of the shared run (Alex is in the audience but not a recipient;
+    // the outsider isn't a member).
+    resetTokenCache();
+    const shared = stubFetch(routes());
+    await run(await testEnv(), NOW, shared.fetchImpl, quiet);
+    expect(calls.filter(isPush).length - shared.calls.filter(isPush).length).toBe(2);
+  });
+
+  test('a missing personalReminders index leaves the shared reminders going out', async () => {
+    const lines: string[] = [];
+    const { fetchImpl } = stubFetch(routes({ personal: () => json(indexMissing, 400) }));
+    const stats = await run(await testEnv(), NOW, fetchImpl, (l) => lines.push(l));
+    expect(stats.sent).toBe(2);
+    expect(lines.some((l) => l.startsWith('personal reminders query failed'))).toBe(true);
   });
 
   test('says which setting is missing', async () => {

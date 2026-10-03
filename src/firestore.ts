@@ -77,8 +77,8 @@ export class Firestore {
    * Unsent reminders due by `now` across every household (a collection group query), oldest or
    * newest first.
    */
-  async dueReminders(now: number, limit: number, direction: Direction = 'ASCENDING'): Promise<RestDocument[]> {
-    const { status, body } = await this.call<{ document?: RestDocument }[]>('POST', `${this.root}:runQuery`, dueRemindersQuery(now, limit, direction));
+  async dueReminders(now: number, limit: number, direction: Direction = 'ASCENDING', collectionId: ReminderCollection = 'reminders'): Promise<RestDocument[]> {
+    const { status, body } = await this.call<{ document?: RestDocument }[]>('POST', `${this.root}:runQuery`, dueRemindersQuery(now, limit, direction, collectionId));
     if (status !== 200) throw Firestore.fail('runQuery', status, body);
     return body.filter((r) => r.document).map((r) => r.document!);
   }
@@ -127,15 +127,18 @@ export class Firestore {
 
 export type Direction = 'ASCENDING' | 'DESCENDING';
 
+/** `reminders` (shared) or `personalReminders` (for named members only, pwa-kit `./audience`). */
+export type ReminderCollection = 'reminders' | 'personalReminders';
+
 export type WriteOutcome = { ok: true } | { ok: false; raced: true } | { ok: false; raced: false; error: string };
 
 /** NOT_FOUND, FAILED_PRECONDITION and ABORTED (google.rpc.Code). */
 const RACED_CODES = [5, 9, 10];
 
-export function dueRemindersQuery(now: number, limit: number, direction: Direction = 'ASCENDING') {
+export function dueRemindersQuery(now: number, limit: number, direction: Direction = 'ASCENDING', collectionId: ReminderCollection = 'reminders') {
   return {
     structuredQuery: {
-      from: [{ collectionId: 'reminders', allDescendants: true }],
+      from: [{ collectionId, allDescendants: true }],
       where: {
         compositeFilter: {
           op: 'AND',
