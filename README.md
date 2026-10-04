@@ -25,7 +25,7 @@ Every 5 minutes:
    households in order of their oldest due reminder, then round by round, every household's first
    reminder before any household's second. At most 10 per household per run; the rest are counted
    as `capped` and wait for the next run.
-4. Going down that order, reads each household's members, roles and `pushSubscriptions` (once per
+4. Going down that order, reads each household's members, roles, `pushSubscriptions` and `notificationPrefs` (once per
    household) and works out the devices: `recipients: 'all'` means every member, a list means
    those listed who are still members. For each person, the devices where they turned
    notifications on in the reminder's app, or all their devices when they did that only in other
@@ -33,6 +33,8 @@ Every 5 minutes:
    reminder (`private` not `false`, or from Spending or Bills) goes only to admins and members,
    never to helpers or kids (huishouden/rules README "Roles"). A personal reminder goes only to
    its recipients who are members, named in its `audience` and not kids, whatever its `private` flag.
+   Nobody gets a reminder from an app they muted for themselves (`notificationPrefs/{email}`
+   `muted`, @huishouden/pwa-kit/push `setAppMuted`).
 
    A reminder is taken only when all of its devices fit in what is left of the run's 45
    requests; the rest wait for the next run, and a household's later reminders wait behind an
