@@ -201,3 +201,10 @@ Test data is invented (`example.com` addresses, demo project ids); the only real
 are the published RFC 8291 example keys. Never commit a service account key or VAPID private key:
 the pre-commit hook (`.githooks/pre-commit`, enabled by `bun install`) and CI scan for them, and
 GitHub push protection is on.
+
+## License
+
+Source available under [PolyForm Shield 1.0.0](LICENSE): you may use, study and modify this code
+for any purpose except providing a product that competes with Huishouden.
+
+Huishouden and its logo are the project's brand; please don't use them for other products.
