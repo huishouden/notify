@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, test } from 'bun:test';
 import { fromB64url, type Bytes } from '../src/b64';
 import { importKeyPair, deriveKeys } from '../src/webpush';
 import { resetTokenCache } from '../src/google';
-import { fairOrder, linkHosts, payload, toTexts, PER_HOUSEHOLD_CAP, roleOf, run, safeLink, SUBREQUEST_BUDGET, targets, toReminder, toSubscription, type Subscription } from '../src/send';
+import { fairOrder, linkHosts, payload, toTexts, PER_HOUSEHOLD_CAP, roleOf, run, safeLink, SUBREQUEST_BUDGET, targets, toMuted, toReminder, toSubscription, type Subscription } from '../src/send';
 import due from './fixtures/due-reminders.json';
 import household from './fixtures/household-h1.json';
 import subscriptions from './fixtures/subscriptions-h1.json';
@@ -36,7 +36,7 @@ const directionOf = (c: Call) => (c.body as { structuredQuery: { orderBy: { dire
  * Firestore, push services and Google's token endpoint. `due` is everything due, oldest first; each
  * query answers with its 50-reminder window of it. Households other than h1 have one member device.
  */
-function routes(over: { personal?: (c: Call) => Response | undefined; due?: Entry[]; newest?: (c: Call) => Response | undefined; write?: (name: string) => Outcome | undefined; batchWrite?: Route; subs?: (household: string) => unknown; push?: Route } = {}): Route[] {
+function routes(over: { prefs?: (household: string) => unknown; personal?: (c: Call) => Response | undefined; due?: Entry[]; newest?: (c: Call) => Response | undefined; write?: (name: string) => Outcome | undefined; batchWrite?: Route; subs?: (household: string) => unknown; push?: Route } = {}): Route[] {
   const docs = (over.due ?? due).filter((e) => e.document);
   return [
     (c) => (c.url === 'https://oauth2.googleapis.com/token' ? json(tokenResponse) : undefined),
@@ -53,6 +53,10 @@ function routes(over: { personal?: (c: Call) => Response | undefined; due?: Entr
       const [, id, subsPath] = m;
       if (!subsPath) return json(id === 'h1' ? household : { ...household, name: household.name.replace('/h1', `/${id}`) });
       return json(over.subs?.(id) ?? (id === 'h1' ? subscriptions : oneDevice(id)));
+    },
+    (c) => {
+      const m = c.method === 'GET' && c.url.match(/\/households\/([^/?]+)\/notificationPrefs\?pageSize=300$/);
+      return m ? json(over.prefs?.(m[1]) ?? {}) : undefined;
     },
     (c) => (c.method === 'DELETE' ? json({}) : undefined),
     (c) => (isPush(c) ? (over.push?.(c) ?? new Response(null, { status: c.url.includes('gone.example.org') ? 410 : 201 })) : undefined),
@@ -138,6 +142,27 @@ describe('targets', () => {
     expect(reminders[1].recipients).toEqual(['sam@example.com', 'mallory@example.com']);
     expect(targets(reminders[1], members, subs).map((s) => s.name.split('/').pop())).toEqual(['sam-tasks-tablet', 'sam-tasks-old']);
     expect(targets(reminders[1], ['alex@example.com'], subs)).toEqual([]);
+  });
+});
+
+describe('muted apps', () => {
+  const members = ['alex@example.com', 'sam@example.com'];
+
+  test("a member who muted the reminder's app gets none of its reminders; other apps still reach them", () => {
+    const muted = new Map([['sam@example.com', ['pet']]]);
+    expect(targets(reminders[0], members, subs, {}, muted).map((s) => s.email)).toEqual(['alex@example.com']);
+    expect(targets({ ...reminders[0], app: 'tasks' }, members, subs, {}, muted).map((s) => s.email)).toContain('sam@example.com');
+  });
+
+  test('a run reads the preferences and skips the muted member', async () => {
+    const prefs = { documents: [{ name: `${DOCS}/households/h1/notificationPrefs/sam@example.com`, fields: { muted: { arrayValue: { values: [{ stringValue: 'pet' }] } }, updatedAt: { integerValue: '1' } } }] };
+    const { fetchImpl, calls } = stubFetch(routes({ due: [due[0]], prefs: (h) => (h === 'h1' ? prefs : undefined) }));
+    await run(await testEnv(), NOW, fetchImpl, quiet);
+    expect(calls.filter(isPush).map((c) => c.url)).toEqual(['https://push.example.net/alex-phone-pet']);
+  });
+
+  test('toMuted reads the email from the document name', () => {
+    expect(toMuted({ name: `${DOCS}/households/h1/notificationPrefs/Sam@example.com`, fields: { muted: { arrayValue: { values: [{ stringValue: 'bills' }, { integerValue: '3' }] } } } } as never)).toEqual(['sam@example.com', ['bills']]);
   });
 });
 
@@ -445,14 +470,14 @@ describe('run', () => {
   });
 
   test('stops within the subrequest budget, never claiming a reminder it cannot finish', async () => {
-    // Household h1: 50 reminders of 3 devices each, one of them dropped. Token, three queries, two
-    // household reads and the batchWrite (7), then 3 pushes for each of the 10 the cap allows, and
+    // Household h1: 50 reminders of 3 devices each, one of them dropped. Token, three queries, three
+    // household reads and the batchWrite (8), then 3 pushes for each of the 10 the cap allows, and
     // the one 410 delete.
     const many = backlog('h1', 50, NOW - 1000);
     const { fetchImpl, calls } = stubFetch(routes({ due: many }));
     const stats = await run(await testEnv(), NOW, fetchImpl, quiet);
     expect(stats).toMatchObject({ sent: 10, pushed: 20, failed: 10, removed: 1, capped: 40, deferred: true });
-    expect(calls).toHaveLength(7 + 30 + 1);
+    expect(calls).toHaveLength(8 + 30 + 1);
   });
 
   test('many households: every run fits in the budget, and each claimed reminder gets all its pushes', async () => {
@@ -481,9 +506,9 @@ describe('run', () => {
     const lines: string[] = [];
     const { fetchImpl, calls } = stubFetch(routes({ due: [due[0]], subs: () => manyDevices(60) }));
     const stats = await run(await testEnv(), NOW, fetchImpl, (l) => lines.push(l));
-    // Token, three queries, two household reads and the batchWrite leave 38.
-    expect(stats).toMatchObject({ sent: 1, pushed: 38 });
-    expect(lines).toEqual(['reminder has 60 devices; sending to 38']);
+    // Token, three queries, three household reads and the batchWrite leave 37.
+    expect(stats).toMatchObject({ sent: 1, pushed: 37 });
+    expect(lines).toEqual(['reminder has 60 devices; sending to 37']);
     expect(calls).toHaveLength(SUBREQUEST_BUDGET);
   });
 

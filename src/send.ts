@@ -183,10 +183,17 @@ export function roleOf(email: string, members: string[], roles: Record<string, u
  * notifications on in the reminder's own app, or on all their devices when they did so only in
  * other apps. A device shared by two recipients (the household tablet) gets it once. A private
  * reminder goes only to admins and members: helpers and kids can't read it in the app either.
+ * Nobody gets one from an app they muted for themselves (`notificationPrefs/{email}`, `muted`).
  */
-export function targets(reminder: Reminder, members: string[], subscriptions: Subscription[], roles: Record<string, unknown> = {}): Subscription[] {
+export function targets(
+  reminder: Reminder,
+  members: string[],
+  subscriptions: Subscription[],
+  roles: Record<string, unknown> = {},
+  muted: Map<string, string[]> = new Map(),
+): Subscription[] {
   const memberSet = new Set(members.map((m) => m.toLowerCase()));
-  const everyone = reminder.recipients === 'all' ? [...memberSet] : reminder.recipients.filter((e) => memberSet.has(e));
+  const everyone = (reminder.recipients === 'all' ? [...memberSet] : reminder.recipients.filter((e) => memberSet.has(e))).filter((e) => !muted.get(e)?.includes(reminder.app));
   const people = reminder.personal
     ? everyone.filter((e) => reminder.audience.includes(e) && roleOf(e, members, roles) !== 'kid')
     : reminder.private
@@ -211,6 +218,16 @@ interface Household {
   members: string[];
   roles: Record<string, unknown>;
   subscriptions: Subscription[];
+  /** Each member's muted apps (@huishouden/pwa-kit/push `setAppMuted`), by lowercase email. */
+  muted: Map<string, string[]>;
+}
+
+/** A `notificationPrefs/{email}` document as the email and the apps it mutes. */
+export function toMuted(doc: RestDocument): [string, string[]] | null {
+  const email = documentPath(doc.name)[3];
+  if (!email) return null;
+  const d = decodeFields(doc.fields) as { muted?: unknown };
+  return [email.toLowerCase(), Array.isArray(d.muted) ? d.muted.filter((a): a is string => typeof a === 'string') : []];
 }
 
 const byAt = (a: Reminder, b: Reminder) => a.at - b.at || (a.doc.name < b.doc.name ? -1 : a.doc.name > b.doc.name ? 1 : 0);
@@ -235,13 +252,18 @@ export function fairOrder(reminders: Reminder[], cap = PER_HOUSEHOLD_CAP): { ord
 }
 
 async function loadHousehold(db: Firestore, id: string): Promise<Household> {
-  const [home, subs] = await Promise.all([db.get(`households/${id}`), db.list(`households/${id}/pushSubscriptions`)]);
+  const [home, subs, prefs] = await Promise.all([
+    db.get(`households/${id}`),
+    db.list(`households/${id}/pushSubscriptions`),
+    db.list(`households/${id}/notificationPrefs`),
+  ]);
   const fields = home ? decodeFields(home.fields) : {};
   const { members, roles } = fields;
   return {
     members: Array.isArray(members) ? members.map(String) : [],
     roles: roles && typeof roles === 'object' && !Array.isArray(roles) ? (roles as Record<string, unknown>) : {},
     subscriptions: subs.map(toSubscription).filter((s): s is Subscription => !!s),
+    muted: new Map(prefs.map(toMuted).filter((m): m is [string, string[]] => !!m)),
   };
 }
 
@@ -311,15 +333,15 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
       let spare = budget.remaining() - 1 - pushes;
       let household = households.get(reminder.householdId);
       if (!household) {
-        if (spare < 3) {
+        if (spare < 4) {
           left++;
           continue;
         }
         household = await loadHousehold(db, reminder.householdId);
         households.set(reminder.householdId, household);
-        spare -= 2;
+        spare -= 3;
       }
-      let to = targets(reminder, household.members, household.subscriptions, household.roles);
+      let to = targets(reminder, household.members, household.subscriptions, household.roles, household.muted);
       // Claimed only when every push fits in this run: never sent twice, never half.
       if (to.length > spare) {
         if (chosen.length > 0 || spare < 1) {
