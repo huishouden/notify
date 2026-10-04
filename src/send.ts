@@ -69,7 +69,29 @@ export interface Reminder {
    */
   personal: boolean;
   audience: string[];
+  /**
+   * The same notification in other languages (pwa-kit `./reminders` `texts`, built with
+   * `inEveryLang`): each device gets the one its subscription's `lang` names, else `title`/`body`.
+   */
+  texts: Partial<Record<Lang, { title: string; body: string }>>;
   doc: RestDocument;
+}
+
+/** The languages the apps speak (pwa-kit `./i18n` `LANGS`). */
+export const LANGS = ['en', 'es', 'nl'] as const;
+export type Lang = (typeof LANGS)[number];
+const isLang = (v: unknown): v is Lang => typeof v === 'string' && (LANGS as readonly string[]).includes(v);
+
+/** A reminder's `texts`, keeping only known languages with a non-empty title and a string body. */
+export function toTexts(value: unknown): Partial<Record<Lang, { title: string; body: string }>> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const out: Partial<Record<Lang, { title: string; body: string }>> = {};
+  for (const [lang, text] of Object.entries(value as Record<string, unknown>)) {
+    if (!isLang(lang) || !text || typeof text !== 'object') continue;
+    const { title, body } = text as { title?: unknown; body?: unknown };
+    if (typeof title === 'string' && title) out[lang] = { title, body: typeof body === 'string' ? body : '' };
+  }
+  return out;
 }
 
 /** Apps whose reminders are money, never sent to helpers or kids (pwa-kit `MONEY_APPS`). */
@@ -81,6 +103,8 @@ export interface Subscription {
   app: string;
   endpoint: string;
   keys: SubscriptionKeys;
+  /** The device's language (pwa-kit `./push`), absent on subscriptions saved before it existed. */
+  lang?: Lang;
 }
 
 export interface RunStats {
@@ -127,11 +151,11 @@ export function toReminder(doc: RestDocument, hosts: RegExp[] = []): Reminder | 
   if (personal && audience.length === 0) return null;
   const url = safeLink(d.url, hosts);
   const isPrivate = d.private !== false || MONEY_APPS.includes(d.app);
-  return { id: path[3], householdId: path[1], app: d.app, title: d.title, body: typeof d.body === 'string' ? d.body : '', at: d.at, url, recipients, private: isPrivate, personal, audience, doc };
+  return { id: path[3], householdId: path[1], app: d.app, title: d.title, body: typeof d.body === 'string' ? d.body : '', at: d.at, url, recipients, private: isPrivate, personal, audience, texts: toTexts(d.texts), doc };
 }
 
 export function toSubscription(doc: RestDocument): Subscription | null {
-  const d = decodeFields(doc.fields) as { email?: unknown; app?: unknown; endpoint?: unknown; keys?: { p256dh?: unknown; auth?: unknown } };
+  const d = decodeFields(doc.fields) as { email?: unknown; app?: unknown; endpoint?: unknown; keys?: { p256dh?: unknown; auth?: unknown }; lang?: unknown };
   if (typeof d.email !== 'string' || typeof d.endpoint !== 'string' || !/^https:\/\//.test(d.endpoint)) return null;
   if (typeof d.keys?.p256dh !== 'string' || typeof d.keys?.auth !== 'string') return null;
   return {
@@ -140,6 +164,7 @@ export function toSubscription(doc: RestDocument): Subscription | null {
     app: typeof d.app === 'string' ? d.app : '',
     endpoint: d.endpoint,
     keys: { p256dh: d.keys.p256dh, auth: d.keys.auth },
+    ...(isLang(d.lang) ? { lang: d.lang } : {}),
   };
 }
 
@@ -176,8 +201,10 @@ export function targets(reminder: Reminder, members: string[], subscriptions: Su
   return [...chosen.values()];
 }
 
-export function payload(reminder: Reminder): string {
-  return JSON.stringify({ title: reminder.title, body: reminder.body, url: reminder.url, tag: reminder.id, app: reminder.app });
+/** What the device shows: the text in its language when the reminder has one, else the reminder's own title and body. */
+export function payload(reminder: Reminder, lang?: Lang): string {
+  const text = (lang && reminder.texts[lang]) || { title: reminder.title, body: reminder.body };
+  return JSON.stringify({ title: text.title, body: text.body, url: reminder.url, tag: reminder.id, app: reminder.app });
 }
 
 interface Household {
@@ -327,8 +354,8 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
     stats.sent = claimed.length;
     const deliveries = claimed.flatMap(({ reminder, to }) => {
       if (to.length === 0) stats.noDevices++;
-      const body = payload(reminder);
-      return to.map((sub) => ({ sub, body }));
+      // Each device in its own language (`lang` on its subscription), when the reminder carries it.
+      return to.map((sub) => ({ sub, body: payload(reminder, sub.lang) }));
     });
     const results = await Promise.all(
       deliveries.map(async ({ sub, body }) => {

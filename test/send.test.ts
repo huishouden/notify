@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, test } from 'bun:test';
 import { fromB64url, type Bytes } from '../src/b64';
 import { importKeyPair, deriveKeys } from '../src/webpush';
 import { resetTokenCache } from '../src/google';
-import { fairOrder, linkHosts, payload, PER_HOUSEHOLD_CAP, roleOf, run, safeLink, SUBREQUEST_BUDGET, targets, toReminder, toSubscription, type Subscription } from '../src/send';
+import { fairOrder, linkHosts, payload, toTexts, PER_HOUSEHOLD_CAP, roleOf, run, safeLink, SUBREQUEST_BUDGET, targets, toReminder, toSubscription, type Subscription } from '../src/send';
 import due from './fixtures/due-reminders.json';
 import household from './fixtures/household-h1.json';
 import subscriptions from './fixtures/subscriptions-h1.json';
@@ -204,6 +204,45 @@ describe('toReminder', () => {
       tag: 'pet-c1-20260101-1155',
       app: 'pet',
     });
+  });
+});
+
+describe('each device in its own language', () => {
+  const base = due.find((e) => e.document)!.document as unknown as Parameters<typeof toReminder>[0];
+  const str = (v: string) => ({ stringValue: v });
+  const text = (title: string, body: string) => ({ mapValue: { fields: { title: str(title), body: str(body) } } });
+  const withTexts = { ...base, fields: { ...base.fields, texts: { mapValue: { fields: { es: text('Biscuit: 1 tableta', 'Example-ol 25 mg, con comida'), nl: text('Biscuit: 1 tablet', 'Example-ol 25 mg, met eten'), fr: text('x', 'y') } } } } } as Parameters<typeof toReminder>[0];
+
+  test('a reminder keeps its texts in known languages', () => {
+    const r = toReminder(withTexts)!;
+    expect(Object.keys(r.texts).sort()).toEqual(['es', 'nl']);
+    expect(toTexts({ es: { title: '', body: 'x' }, nl: { title: 'Hoi' }, en: 'no' })).toEqual({ nl: { title: 'Hoi', body: '' } });
+    expect(toTexts(null)).toEqual({});
+    expect(toReminder(base)!.texts).toEqual({});
+  });
+
+  test('the payload is in the device language, else the reminder title and body', () => {
+    const r = toReminder(withTexts)!;
+    expect(JSON.parse(payload(r, 'es'))).toMatchObject({ title: 'Biscuit: 1 tableta', body: 'Example-ol 25 mg, con comida' });
+    expect(JSON.parse(payload(r, 'en')).title).toBe(r.title);
+    expect(JSON.parse(payload(r)).title).toBe(r.title);
+    expect(JSON.parse(payload(toReminder(base)!, 'nl')).title).toBe(r.title);
+  });
+
+  test('a subscription carries its language when it has a known one', () => {
+    const sub = subscriptions.documents[0] as unknown as Parameters<typeof toSubscription>[0];
+    expect(toSubscription(sub)!.lang).toBeUndefined();
+    expect(toSubscription({ ...sub, fields: { ...sub.fields, lang: str('nl') } } as typeof sub)!.lang).toBe('nl');
+    expect(toSubscription({ ...sub, fields: { ...sub.fields, lang: str('fr') } } as typeof sub)!.lang).toBeUndefined();
+  });
+
+  test('a run sends each device its own language', async () => {
+    const subs = structuredClone(subscriptions);
+    for (const d of subs.documents) (d.fields as Record<string, unknown>).lang = str('es');
+    const reminderDue = due.map((e) => (e.document && e.document.name === base.name ? { ...e, document: withTexts } : e)) as typeof due;
+    const { fetchImpl, calls } = stubFetch(routes({ due: reminderDue as never, subs: (id) => (id === 'h1' ? subs : oneDevice(id)) }));
+    await run(await testEnv(), NOW, fetchImpl as never, quiet);
+    expect(calls.filter(isPush).length).toBeGreaterThan(0);
   });
 });
 
