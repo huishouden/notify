@@ -57,7 +57,9 @@ Each run logs one line of counts (`due`, `sent`, `pushed`, `failed`, `removed`, 
 run).
 
 The push message is JSON the kit's service worker shows: `{ title, body, url, tag, app }`;
-tapping it opens `url` in the app.
+tapping it opens `url` in the app. Each device gets it in its own language: when the reminder has
+`texts` (the same title and body in `en`, `es` and `nl`) and the device's subscription has `lang`,
+that entry is sent; otherwise the reminder's own `title` and `body`.
 
 | File | Does |
 |---|---|
