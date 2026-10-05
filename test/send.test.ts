@@ -328,7 +328,7 @@ describe('readsPerRun', () => {
     expect(readsPerRun('3000')).toBe(10);
     expect(readsPerRun('100')).toBe(1);
     for (const v of [undefined, '', '0']) expect(readsPerRun(v)).toBe(Infinity);
-    for (const v of ['-5', 'lots', '3,000', '3k']) expect(() => readsPerRun(v)).toThrow('FIRESTORE_NOTIFY_READS');
+    for (const v of ['-5', 'lots', '3,000', '3k', '2.5']) expect(() => readsPerRun(v)).toThrow('FIRESTORE_NOTIFY_READS');
   });
 });
 
@@ -521,9 +521,9 @@ describe('run', () => {
 
   test('FIRESTORE_NOTIFY_READS: households past the run\'s share wait for a later run, unsent and unmarked', async () => {
     const dueBoth = byAt([dueDoc('h1', 'a', NOW - 2000), dueDoc('h2', 'b', NOW - 1000)]);
-    // 2,880 a day is 10 a run: the queries (3) and h1 (1 + 5 subscriptions + 1) use 10, so h2 waits.
+    // 2,016 a day is 7 a run for households: h1 (1 + 5 subscriptions + 1) uses 7, so h2 waits. The queries (3) come on top.
     const tight = stubFetch(routes({ due: dueBoth }));
-    const stats = await run({ ...(await testEnv()), FIRESTORE_NOTIFY_READS: '2880' }, NOW, tight.fetchImpl, quiet);
+    const stats = await run({ ...(await testEnv()), FIRESTORE_NOTIFY_READS: '2016' }, NOW, tight.fetchImpl, quiet);
     expect(stats).toMatchObject({ due: 2, sent: 1, deferred: true, reads: 10 });
     expect(writesOf(tight.calls)[0].map((w) => shortName(w.update.name))).toEqual(['households/h1/reminders/a']);
     expect(tight.calls.some((c) => c.url.includes('/households/h2'))).toBe(false);
@@ -533,12 +533,13 @@ describe('run', () => {
     expect(await run(await testEnv(), NOW, open.fetchImpl, quiet)).toMatchObject({ sent: 2, deferred: false });
   });
 
-  test("a full oldest-first window still asks for the newest-first one past the run's share", async () => {
+  test('under a backlog the queries don\'t use up the households\' share: the newest-first window\'s household is read too', async () => {
     const { fetchImpl, calls } = stubFetch(routes({ due: [...backlog('h1', 60, NOW - 60_000), dueDoc('h2', 'only', NOW - 1000)] }));
-    const stats = await run({ ...(await testEnv()), FIRESTORE_NOTIFY_READS: '2880' }, NOW, fetchImpl, quiet);
+    const stats = await run({ ...(await testEnv()), FIRESTORE_NOTIFY_READS: '5760' }, NOW, fetchImpl, quiet);
     expect(calls.filter((c) => c.url.endsWith(':runQuery')).map(directionOf)).toEqual(['ASCENDING', 'ASCENDING', 'DESCENDING']);
-    // The share is spent on the queries: the first household in order is read, the other waits.
-    expect(stats).toMatchObject({ sent: PER_HOUSEHOLD_CAP, deferred: true });
+    // 20 a run for households: h1 (7) and h2 (1 + 1 device + 1) both fit, though the queries read over 100.
+    expect(stats).toMatchObject({ sent: PER_HOUSEHOLD_CAP + 1, deferred: true });
+    expect(writesOf(calls)[0].map((w) => shortName(w.update.name))).toContain('households/h2/reminders/only');
   });
 
   test('a budget too small for any household still sends the first one each run', async () => {

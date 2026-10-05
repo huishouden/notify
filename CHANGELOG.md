@@ -8,7 +8,7 @@
 
 ### Performance
 
-* newest-first query only when needed; reads counted and capped (FIRESTORE_NOTIFY_READS) ([bfb11ad](https://github.com/huishouden/notify/commit/bfb11ad000ffa9fb2f4b8bf0fd4ab409641116af))
+* newest-first query only when needed (576 reads a day when quiet, was 864); reads counted per run (`reads`) and household reads capped by FIRESTORE_NOTIFY_READS ([bfb11ad](https://github.com/huishouden/notify/commit/bfb11ad000ffa9fb2f4b8bf0fd4ab409641116af))
 
 ## [0.2.0](https://github.com/huishouden/notify/compare/v0.1.0...v0.2.0) (2026-10-05)
 

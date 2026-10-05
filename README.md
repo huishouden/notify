@@ -109,16 +109,17 @@ that entry is sent; otherwise the reminder's own `title` and `body`.
   reminders name as their source. Each run counts what it was billed (`reads` in the log line and
   the `NotifyRun` event).
 
-  `FIRESTORE_NOTIFY_READS` (`wrangler.toml`, 3,000 a day) caps that. The Worker keeps no state
-  between runs, so the cap is spent per run: 1/288 of it (the cron's runs a day), 10 reads with
-  3,000. The due-reminder queries always run, so a backlog of 50 or more due can still cost up to
-  150 reads a run (the newest-first window is what lets other households past one household's
-  backlog); past the run's share, further households wait for a later run, unsent and unmarked (the
-  first household of a run is always read, so a cap set too low slows sending rather than stopping
-  it). At 3,000 a day: 576 for the quiet queries leaves ~2,400 for sending, about one household's
-  reminders (~7 to 10 reads) every 5 minutes; with several households due in the same 5 minutes
-  the later ones go out up to 5 minutes later each. Unset or 0: no cap. Any other value that isn't a non-negative number makes every run
-  throw (the `NotifyRun` error alert fires), so set it to digits only.
+  `FIRESTORE_NOTIFY_READS` (`wrangler.toml`, 3,000 a day) caps the household reads. The Worker
+  keeps no state between runs, so the cap is spent per run: 1/288 of it (the cron's runs a day),
+  10 reads with 3,000, about one household's members, subscriptions and preferences. Past it,
+  further households wait for a later run, unsent and unmarked; the first household of a run is
+  always read, so a cap set too low slows sending rather than stopping it. With several households
+  due in the same 5 minutes, the later ones go out up to 5 minutes later each. The due-reminder
+  queries come on top and always run: 576 a day when quiet, up to 150 a run under a backlog of 50
+  or more (the newest-first window is what lets other households past one household's backlog).
+  So the Worker's day is at most about 576 + 3,000 reads outside a backlog. Unset or 0: no cap.
+  Any other value that isn't a whole number (digits only, such as 3000) makes every run throw (the
+  `NotifyRun` error alert fires).
 - **iPhone and iPad** only show notifications for an app added to the Home Screen (Share > Add to
   Home Screen), on iOS/iPadOS 16.4 or later. In Safari tabs, and on older versions, there is no Web
   Push. `pushSupport()` in the kit says which case a device is in, so the app can explain.

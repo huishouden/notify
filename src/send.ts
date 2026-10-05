@@ -18,10 +18,11 @@ export interface Env {
    */
   LINK_HOSTS?: string;
   /**
-   * Firestore document reads a day this Worker may use, of the project's free 50,000 shared with
-   * every app (README, "Limits"), spent 1/288 per run. Past a run's share, households wait for a
-   * later run. The due-reminder queries always run (2 reads when nothing is due, up to 150 under a
-   * backlog). Unset or 0: no limit; any other value that isn't a number makes every run throw.
+   * Firestore document reads a day this Worker may spend on households (members, subscriptions,
+   * preferences, sources), of the project's free 50,000 shared with every app (README, "Limits"):
+   * 1/288 per run, past which households wait for a later run. The due-reminder queries come on
+   * top (2 reads a quiet run, 576 a day; up to 150 a run under a backlog). Unset or 0: no limit;
+   * any value that isn't a whole number makes every run throw.
    */
   FIRESTORE_NOTIFY_READS?: string;
 }
@@ -33,7 +34,7 @@ export const RUNS_PER_DAY = 288;
 export function readsPerRun(value: string | undefined): number {
   if (value === undefined || value.trim() === '') return Infinity;
   const day = Number(value);
-  if (!Number.isFinite(day) || day < 0) throw new Error(`FIRESTORE_NOTIFY_READS must be a whole number of reads a day (wrangler.toml [vars]), not "${value}".`);
+  if (!Number.isInteger(day) || day < 0) throw new Error(`FIRESTORE_NOTIFY_READS must be a whole number of reads a day (wrangler.toml [vars]), not "${value}".`);
   return day === 0 ? Infinity : Math.max(1, Math.floor(day / RUNS_PER_DAY));
 }
 
@@ -364,8 +365,7 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
     ]);
     // Oldest first alone can be filled by one household's backlog; newest first then reaches the
     // rest. A window that isn't full already holds everything due, so the second query (billed a
-    // read even when empty) runs only when it is. It isn't held to the read share: it is what lets
-    // other households past one household's backlog, and a backlog is rare.
+    // read even when empty) runs only when it is.
     const newest =
       oldest.length < BATCH
         ? []
@@ -374,6 +374,8 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
             log(`newest-first query failed, using the oldest-first window only: ${error instanceof Error ? redact(error.message) : String(error)}`);
             return null;
           });
+    // The share is for household reads; the queries are counted apart (README, "Limits").
+    const queryReads = db.reads;
     const docs = new Map<string, RestDocument>();
     for (const doc of [...oldest, ...(newest ?? [])]) docs.set(doc.name, doc);
     // Windows that overlap cover everything due between them.
@@ -420,7 +422,7 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
         // The read budget: at least the household document, its two lists and the sources. The
         // first household of a run is always read, so a budget set too low slows sending down
         // rather than stopping it; the rest wait for a later run, still unsent.
-        if (households.size > 0 && db.reads + 3 + paths.length > maxReads) {
+        if (households.size > 0 && db.reads - queryReads + 3 + paths.length > maxReads) {
           blocked.add(reminder.householdId);
           left++;
           continue;
