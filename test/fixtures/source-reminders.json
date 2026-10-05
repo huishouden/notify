@@ -1,0 +1,510 @@
+[
+  {
+    "document": {
+      "name": "projects/demo-huishouden/databases/(default)/documents/households/h1/reminders/bills-rent-due",
+      "fields": {
+        "app": {
+          "stringValue": "bills"
+        },
+        "title": {
+          "stringValue": "Rent due today"
+        },
+        "body": {
+          "stringValue": ""
+        },
+        "at": {
+          "integerValue": "1767268740000"
+        },
+        "url": {
+          "stringValue": "https://huishouden-piekstra.web.app/bills/"
+        },
+        "recipients": {
+          "stringValue": "all"
+        },
+        "ref": {
+          "stringValue": "bills:bills-rent-due"
+        },
+        "private": {
+          "booleanValue": true
+        },
+        "sent": {
+          "booleanValue": false
+        },
+        "createdAt": {
+          "integerValue": "1767182400000"
+        },
+        "by": {
+          "stringValue": "alex@example.com"
+        },
+        "source": {
+          "mapValue": {
+            "fields": {
+              "checks": {
+                "arrayValue": {
+                  "values": [
+                    {
+                      "mapValue": {
+                        "fields": {
+                          "doc": {
+                            "stringValue": "bills/rent"
+                          },
+                          "due": {
+                            "arrayValue": {
+                              "values": [
+                                {
+                                  "mapValue": {
+                                    "fields": {
+                                      "field": {
+                                        "stringValue": "status"
+                                      },
+                                      "notIn": {
+                                        "arrayValue": {
+                                          "values": [
+                                            {
+                                              "stringValue": "paid"
+                                            },
+                                            {
+                                              "stringValue": "credit"
+                                            }
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  }
+                                },
+                                {
+                                  "mapValue": {
+                                    "fields": {
+                                      "field": {
+                                        "stringValue": "dismissed"
+                                      },
+                                      "notIn": {
+                                        "arrayValue": {
+                                          "values": [
+                                            {
+                                              "booleanValue": true
+                                            }
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  }
+                                },
+                                {
+                                  "mapValue": {
+                                    "fields": {
+                                      "field": {
+                                        "stringValue": "due"
+                                      },
+                                      "in": {
+                                        "arrayValue": {
+                                          "values": [
+                                            {
+                                              "stringValue": "2026-01-01"
+                                            }
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "createTime": "2026-01-01T00:00:00.000000Z",
+      "updateTime": "2026-01-01T00:00:03.000003Z"
+    },
+    "readTime": "2026-01-01T12:00:00.000000Z"
+  },
+  {
+    "document": {
+      "name": "projects/demo-huishouden/databases/(default)/documents/households/h1/reminders/bills-water-due",
+      "fields": {
+        "app": {
+          "stringValue": "bills"
+        },
+        "title": {
+          "stringValue": "Water due today"
+        },
+        "body": {
+          "stringValue": ""
+        },
+        "at": {
+          "integerValue": "1767268750000"
+        },
+        "url": {
+          "stringValue": "https://huishouden-piekstra.web.app/bills/"
+        },
+        "recipients": {
+          "stringValue": "all"
+        },
+        "ref": {
+          "stringValue": "bills:bills-water-due"
+        },
+        "private": {
+          "booleanValue": true
+        },
+        "sent": {
+          "booleanValue": false
+        },
+        "createdAt": {
+          "integerValue": "1767182400000"
+        },
+        "by": {
+          "stringValue": "alex@example.com"
+        },
+        "source": {
+          "mapValue": {
+            "fields": {
+              "checks": {
+                "arrayValue": {
+                  "values": [
+                    {
+                      "mapValue": {
+                        "fields": {
+                          "doc": {
+                            "stringValue": "bills/water"
+                          },
+                          "due": {
+                            "arrayValue": {
+                              "values": [
+                                {
+                                  "mapValue": {
+                                    "fields": {
+                                      "field": {
+                                        "stringValue": "status"
+                                      },
+                                      "notIn": {
+                                        "arrayValue": {
+                                          "values": [
+                                            {
+                                              "stringValue": "paid"
+                                            },
+                                            {
+                                              "stringValue": "credit"
+                                            }
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  }
+                                },
+                                {
+                                  "mapValue": {
+                                    "fields": {
+                                      "field": {
+                                        "stringValue": "dismissed"
+                                      },
+                                      "notIn": {
+                                        "arrayValue": {
+                                          "values": [
+                                            {
+                                              "booleanValue": true
+                                            }
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  }
+                                },
+                                {
+                                  "mapValue": {
+                                    "fields": {
+                                      "field": {
+                                        "stringValue": "due"
+                                      },
+                                      "in": {
+                                        "arrayValue": {
+                                          "values": [
+                                            {
+                                              "stringValue": "2026-01-01"
+                                            }
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "createTime": "2026-01-01T00:00:00.000000Z",
+      "updateTime": "2026-01-01T00:00:04.000004Z"
+    },
+    "readTime": "2026-01-01T12:00:00.000000Z"
+  },
+  {
+    "document": {
+      "name": "projects/demo-huishouden/databases/(default)/documents/households/h1/reminders/bills-phone-due",
+      "fields": {
+        "app": {
+          "stringValue": "bills"
+        },
+        "title": {
+          "stringValue": "Phone due today"
+        },
+        "body": {
+          "stringValue": ""
+        },
+        "at": {
+          "integerValue": "1767268760000"
+        },
+        "url": {
+          "stringValue": "https://huishouden-piekstra.web.app/bills/"
+        },
+        "recipients": {
+          "stringValue": "all"
+        },
+        "ref": {
+          "stringValue": "bills:bills-phone-due"
+        },
+        "private": {
+          "booleanValue": true
+        },
+        "sent": {
+          "booleanValue": false
+        },
+        "createdAt": {
+          "integerValue": "1767182400000"
+        },
+        "by": {
+          "stringValue": "alex@example.com"
+        },
+        "source": {
+          "mapValue": {
+            "fields": {
+              "checks": {
+                "arrayValue": {
+                  "values": [
+                    {
+                      "mapValue": {
+                        "fields": {
+                          "doc": {
+                            "stringValue": "bills/phone"
+                          },
+                          "due": {
+                            "arrayValue": {
+                              "values": [
+                                {
+                                  "mapValue": {
+                                    "fields": {
+                                      "field": {
+                                        "stringValue": "status"
+                                      },
+                                      "notIn": {
+                                        "arrayValue": {
+                                          "values": [
+                                            {
+                                              "stringValue": "paid"
+                                            },
+                                            {
+                                              "stringValue": "credit"
+                                            }
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  }
+                                },
+                                {
+                                  "mapValue": {
+                                    "fields": {
+                                      "field": {
+                                        "stringValue": "dismissed"
+                                      },
+                                      "notIn": {
+                                        "arrayValue": {
+                                          "values": [
+                                            {
+                                              "booleanValue": true
+                                            }
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  }
+                                },
+                                {
+                                  "mapValue": {
+                                    "fields": {
+                                      "field": {
+                                        "stringValue": "due"
+                                      },
+                                      "in": {
+                                        "arrayValue": {
+                                          "values": [
+                                            {
+                                              "stringValue": "2026-01-01"
+                                            }
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "createTime": "2026-01-01T00:00:00.000000Z",
+      "updateTime": "2026-01-01T00:00:05.000005Z"
+    },
+    "readTime": "2026-01-01T12:00:00.000000Z"
+  },
+  {
+    "document": {
+      "name": "projects/demo-huishouden/databases/(default)/documents/households/h1/reminders/bills-rent-again",
+      "fields": {
+        "app": {
+          "stringValue": "bills"
+        },
+        "title": {
+          "stringValue": "Rent due today (copy)"
+        },
+        "body": {
+          "stringValue": ""
+        },
+        "at": {
+          "integerValue": "1767268770000"
+        },
+        "url": {
+          "stringValue": "https://huishouden-piekstra.web.app/bills/"
+        },
+        "recipients": {
+          "stringValue": "all"
+        },
+        "ref": {
+          "stringValue": "bills:bills-rent-again"
+        },
+        "private": {
+          "booleanValue": true
+        },
+        "sent": {
+          "booleanValue": false
+        },
+        "createdAt": {
+          "integerValue": "1767182400000"
+        },
+        "by": {
+          "stringValue": "alex@example.com"
+        },
+        "source": {
+          "mapValue": {
+            "fields": {
+              "checks": {
+                "arrayValue": {
+                  "values": [
+                    {
+                      "mapValue": {
+                        "fields": {
+                          "doc": {
+                            "stringValue": "bills/rent"
+                          },
+                          "due": {
+                            "arrayValue": {
+                              "values": [
+                                {
+                                  "mapValue": {
+                                    "fields": {
+                                      "field": {
+                                        "stringValue": "status"
+                                      },
+                                      "notIn": {
+                                        "arrayValue": {
+                                          "values": [
+                                            {
+                                              "stringValue": "paid"
+                                            },
+                                            {
+                                              "stringValue": "credit"
+                                            }
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  }
+                                },
+                                {
+                                  "mapValue": {
+                                    "fields": {
+                                      "field": {
+                                        "stringValue": "dismissed"
+                                      },
+                                      "notIn": {
+                                        "arrayValue": {
+                                          "values": [
+                                            {
+                                              "booleanValue": true
+                                            }
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  }
+                                },
+                                {
+                                  "mapValue": {
+                                    "fields": {
+                                      "field": {
+                                        "stringValue": "due"
+                                      },
+                                      "in": {
+                                        "arrayValue": {
+                                          "values": [
+                                            {
+                                              "stringValue": "2026-01-01"
+                                            }
+                                          ]
+                                        }
+                                      }
+                                    }
+                                  }
+                                }
+                              ]
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "createTime": "2026-01-01T00:00:00.000000Z",
+      "updateTime": "2026-01-01T00:00:06.000006Z"
+    },
+    "readTime": "2026-01-01T12:00:00.000000Z"
+  }
+]

@@ -36,13 +36,26 @@ Every 5 minutes:
    Nobody gets a reminder from an app they muted for themselves (`notificationPrefs/{email}`
    `muted`, @huishouden/pwa-kit/push `setAppMuted`).
 
+   With the household, in the same go, one `batchGet` reads every record its due reminders name in
+   their `source` (pwa-kit `ReminderSource`: a bill, a task, a dose), each record once. A reminder
+   whose source says it is done (a bill paid or skipped, a task ticked, a dose marked, its record
+   removed) is not sent but deleted, in step 5's `batchWrite`, so paying a bill from the portal's
+   To-do list or the connector stops its reminders without Bills being opened. The kit's
+   `@huishouden/pwa-kit/reminder-source` decides it, the same code the apps write sources with: a
+   source names only its app's own collections and the fields that say a record is done
+   (`REMINDER_SOURCES`), and counts only when its writer (`by`, which the rules make the signed-in
+   writer) is still a member whose role may read those records, for Health records one of the
+   person's `readers` (that person's document is read in the same `batchGet`). So a source never
+   tells anyone more than they could see in the app. Reminders without a source, with one that
+   doesn't count, or whose read fails (one log line) are sent as before.
+
    A reminder is taken only when all of its devices fit in what is left of the run's 45
    requests; the rest wait for the next run, and a household's later reminders wait behind an
    earlier one that didn't fit. A reminder with more devices than any run allows, when it is
    the first in line, goes to as many as fit.
-5. Marks the chosen reminders sent in one Firestore `batchWrite`, each on the condition that it
-   hasn't changed since step 2 (`currentDocument.updateTime`), and pushes only those whose write
-   succeeded. Overlapping runs, or a member editing or deleting the reminder meanwhile, can't cause
+5. Marks the chosen reminders sent, and deletes those no longer due, in one Firestore
+   `batchWrite`, each on the condition that it hasn't changed since step 2
+   (`currentDocument.updateTime`), and pushes only those whose write succeeded. Overlapping runs, or a member editing or deleting the reminder meanwhile, can't cause
    a second notification; those count as `raced`.
 6. Sends a Web Push message to each device: encrypted for that device (RFC 8291, aes128gcm) and
    signed with the Huishouden VAPID key (RFC 8292). No Firebase Cloud Messaging or other push
@@ -55,7 +68,8 @@ notification, so nobody gets a pile of stale medicine reminders at once (`late`)
 malformed ones (`invalid`), in the same `batchWrite` as the claims.
 
 Each run logs one line of counts (`due`, `sent`, `pushed`, `failed`, `removed`, `late`,
-`invalid`, `raced`, `noDevices`, `capped`, and `deferred`: something due was left for a later
+`invalid`, `raced`, `noDevices`, `capped`, `done`: deleted unsent because their source is done,
+and `deferred`: something due was left for a later
 run).
 
 The push message is JSON the kit's service worker shows: `{ title, body, url, tag, app }`;
@@ -66,11 +80,12 @@ that entry is sent; otherwise the reminder's own `title` and `body`.
 | File | Does |
 |---|---|
 | `src/index.ts` | The Worker: the cron handler, and a one-line page for any HTTP request |
+| `src/redact.ts` | Error messages without addresses or document paths, for logs and the heartbeat |
 | `src/heartbeat.ts` | One `NotifyRun` event per run to New Relic, for the "silent" and "failing" alerts |
 | `src/send.ts` | One run: query, fair order, recipients, claim, send, clean up |
 | `src/webpush.ts` | Web Push encryption and VAPID with WebCrypto only |
 | `src/google.ts` | Service account token |
-| `src/firestore.ts` | The Firestore REST calls (query, read, `batchWrite`, delete) and value decoding |
+| `src/firestore.ts` | The Firestore REST calls (query, read, `batchGet`, `batchWrite`, delete) and value decoding |
 | `scripts/vapid.ts` | `bun run vapid`: a new VAPID key pair |
 
 ## Limits
@@ -78,12 +93,13 @@ that entry is sent; otherwise the reminder's own `title` and `body`.
 - **5-minute granularity.** A reminder due at 08:00 arrives between 08:00 and about 08:05.
 - **Cloudflare free plan**: 100,000 requests a day (the schedule uses 288), 50 outgoing requests
   per run and 10 ms of CPU per run. A run uses one request for the token, three for the queries,
-  two per household, one `batchWrite` and one per device, plus deletes of dropped subscriptions
+  three per household (four when its due reminders have a source), one `batchWrite` and one per device, plus deletes of dropped subscriptions
   when requests are left, and stays within 45; whatever didn't fit goes out 5 minutes later.
   The encryption is done by the runtime's native WebCrypto, well inside the CPU limit for the
   number of devices a run can reach.
 - **Firestore free tier**: each run reads at most 150 due reminders (the shared windows overlap
-  when fewer are due) plus each involved household and its subscriptions, and an empty run costs
+  when fewer are due) plus each involved household, its subscriptions and the records its due
+  reminders name as their source, and an empty run costs
   three reads (one per query); about 900 reads a day when idle, against 50,000.
 - **iPhone and iPad** only show notifications for an app added to the Home Screen (Share > Add to
   Home Screen), on iOS/iPadOS 16.4 or later. In Safari tabs, and on older versions, there is no Web
