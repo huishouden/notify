@@ -117,15 +117,15 @@ export class Firestore {
   }
 
   /**
-   * Marks documents sent, and deletes `remove`, in one non-atomic `batchWrite`, each only if
-   * unchanged since it was read (`updateTime` precondition), and says per document (the marked
-   * ones, then the deleted ones) whether it was written. `raced` means someone else got there
-   * first: another run, or a member editing, rescheduling or deleting it.
+   * In one non-atomic `batchWrite`: marks `mark` sent and deletes `remove`, each only if unchanged
+   * since it was read (`updateTime` precondition), and says per document whether it was written.
+   * `raced` means someone else got there first: another run, or a member editing, rescheduling or
+   * deleting it.
    */
-  async markSent(docs: RestDocument[], sentAt: number, remove: RestDocument[] = []): Promise<WriteOutcome[]> {
-    if (docs.length === 0 && remove.length === 0) return [];
+  async commit({ mark, remove = [] }: { mark: RestDocument[]; remove?: RestDocument[] }, sentAt: number): Promise<{ marked: WriteOutcome[]; removed: WriteOutcome[] }> {
+    if (mark.length === 0 && remove.length === 0) return { marked: [], removed: [] };
     const writes = [
-      ...docs.map((doc) => ({
+      ...mark.map((doc) => ({
         update: { name: doc.name, fields: { sent: { booleanValue: true }, sentAt: { integerValue: String(sentAt) } } },
         updateMask: { fieldPaths: ['sent', 'sentAt'] },
         currentDocument: { updateTime: doc.updateTime },
@@ -134,12 +134,13 @@ export class Firestore {
     ];
     const { status, body } = await this.call<{ status?: { code?: number; message?: string }[] }>('POST', `${this.root}:batchWrite`, { writes });
     if (status !== 200) throw Firestore.fail('batchWrite', status, body);
-    return writes.map((_, i) => {
+    const outcomes = writes.map((_, i): WriteOutcome => {
       const code = body.status?.[i]?.code ?? 0;
       if (code === 0) return { ok: true };
       if (RACED_CODES.includes(code)) return { ok: false, raced: true };
       return { ok: false, raced: false, error: `code ${code}: ${body.status?.[i]?.message ?? ''}`.trim() };
     });
+    return { marked: outcomes.slice(0, mark.length), removed: outcomes.slice(mark.length) };
   }
 
   async delete(name: string): Promise<void> {

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, test } from 'bun:test';
 import { fromB64url, type Bytes } from '../src/b64';
 import { importKeyPair, deriveKeys } from '../src/webpush';
 import { resetTokenCache } from '../src/google';
-import { fairOrder, linkHosts, payload, toTexts, PER_HOUSEHOLD_CAP, roleOf, run, safeLink, SUBREQUEST_BUDGET, targets, toMuted, toReminder, toSubscription, type Subscription } from '../src/send';
+import { fairOrder, sourceDone, linkHosts, payload, toTexts, PER_HOUSEHOLD_CAP, roleOf, run, safeLink, SUBREQUEST_BUDGET, targets, toMuted, toReminder, toSubscription, type Subscription } from '../src/send';
 import due from './fixtures/due-reminders.json';
 import household from './fixtures/household-h1.json';
 import subscriptions from './fixtures/subscriptions-h1.json';
@@ -613,6 +613,29 @@ describe('reminders with a source', () => {
     const { fetchImpl, calls } = stubFetch(routes({ due: [odd] }));
     expect(await run(await testEnv(), NOW, fetchImpl, quiet)).toMatchObject({ sent: 1, done: 0 });
     expect(asked(calls)).toEqual([]);
+  });
+
+  test("only a source its writer may use counts: a current member whose role may read those records", () => {
+    const rent = toReminder(entries[0].document as never)!;
+    const paid = new Map([['bills/rent', { status: 'paid', due: '2026-01-01' }]]);
+    const home = { members: ['alex@example.com', 'sam@example.com'], roles: {} };
+    expect(sourceDone(rent, home, paid)).toBe(true);
+    // A helper can't see bills, so a helper's bill source is ignored and the reminder goes out.
+    expect(sourceDone({ ...rent, by: 'sam@example.com' }, { ...home, roles: { 'sam@example.com': 'helper' } }, paid)).toBe(false);
+    expect(sourceDone({ ...rent, by: 'mallory@example.com' }, home, paid)).toBe(false);
+    expect(sourceDone({ ...rent, by: '' }, home, paid)).toBe(false);
+    // Health: only one of the person's readers.
+    const dose = { ...rent, app: 'health', source: { checks: [{ doc: 'healthPeople/p1/doses/m1_0800', absent: true as const }] } };
+    const given = (readers: string[]) => new Map<string, Record<string, unknown> | null>([['healthPeople/p1/doses/m1_0800', { status: 'given' }], ['healthPeople/p1', { readers }]]);
+    expect(sourceDone({ ...dose, by: 'sam@example.com' }, home, given(['sam@example.com']))).toBe(true);
+    expect(sourceDone({ ...dose, by: 'sam@example.com' }, home, given(['alex@example.com']))).toBe(false);
+  });
+
+  test("a writer who isn't a member any more: the source is ignored and the reminder sent", async () => {
+    const gone = structuredClone(entries[0]);
+    (gone.document!.fields!.by as { stringValue: string }).stringValue = 'mallory@example.com';
+    const { fetchImpl } = stubFetch(routes({ due: [gone] }));
+    expect(await run(await testEnv(), NOW, fetchImpl, quiet)).toMatchObject({ sent: 1, done: 0 });
   });
 
   test('a household with sources costs one more request, and still fits the budget', async () => {
