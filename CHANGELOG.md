@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.4.0](https://github.com/huishouden/notify/compare/v0.3.1...v0.4.0) (2026-10-05)
+
+### Features
+
+* A Pet outing reminder is deleted unsent once the outing is logged anywhere or the pet's outings are turned off: sources may name `petOutingPlans` (`on`) and `petOutings` (pwa-kit 0.105.0; was 0.98.2).
+
 ## [0.3.1](https://github.com/huishouden/notify/compare/v0.3.0...v0.3.1) (2026-10-05)
 
 ### Bug Fixes
