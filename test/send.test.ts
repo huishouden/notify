@@ -533,10 +533,11 @@ describe('run', () => {
     expect(await run(await testEnv(), NOW, open.fetchImpl, quiet)).toMatchObject({ sent: 2, deferred: false });
   });
 
-  test('a full oldest-first window past the run\'s share skips the newest-first query', async () => {
-    const { fetchImpl, calls } = stubFetch(routes({ due: backlog('h1', 60, NOW - 1000) }));
+  test("a full oldest-first window still asks for the newest-first one past the run's share", async () => {
+    const { fetchImpl, calls } = stubFetch(routes({ due: [...backlog('h1', 60, NOW - 60_000), dueDoc('h2', 'only', NOW - 1000)] }));
     const stats = await run({ ...(await testEnv()), FIRESTORE_NOTIFY_READS: '2880' }, NOW, fetchImpl, quiet);
-    expect(calls.filter((c) => c.url.endsWith(':runQuery')).map(directionOf)).toEqual(['ASCENDING', 'ASCENDING']);
+    expect(calls.filter((c) => c.url.endsWith(':runQuery')).map(directionOf)).toEqual(['ASCENDING', 'ASCENDING', 'DESCENDING']);
+    // The share is spent on the queries: the first household in order is read, the other waits.
     expect(stats).toMatchObject({ sent: PER_HOUSEHOLD_CAP, deferred: true });
   });
 

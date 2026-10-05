@@ -20,8 +20,8 @@ export interface Env {
   /**
    * Firestore document reads a day this Worker may use, of the project's free 50,000 shared with
    * every app (README, "Limits"), spent 1/288 per run. Past a run's share, households wait for a
-   * later run and the newest-first query is skipped; the oldest-first and personal queries always
-   * run (2 reads when nothing is due, up to 100 under a backlog). Unset or 0: no limit.
+   * later run. The due-reminder queries always run (2 reads when nothing is due, up to 150 under a
+   * backlog). Unset or 0: no limit; any other value that isn't a number makes every run throw.
    */
   FIRESTORE_NOTIFY_READS?: string;
 }
@@ -364,12 +364,11 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
     ]);
     // Oldest first alone can be filled by one household's backlog; newest first then reaches the
     // rest. A window that isn't full already holds everything due, so the second query (billed a
-    // read even when empty) runs only when it is, and the run's read share isn't spent yet.
+    // read even when empty) runs only when it is. It isn't held to the read share: it is what lets
+    // other households past one household's backlog, and a backlog is rare.
     const newest =
       oldest.length < BATCH
         ? []
-        : db.reads >= maxReads
-          ? null
         : await db.dueReminders(now, BATCH, 'DESCENDING').catch((error: unknown) => {
             if (error instanceof BudgetExhausted) throw error;
             log(`newest-first query failed, using the oldest-first window only: ${error instanceof Error ? redact(error.message) : String(error)}`);

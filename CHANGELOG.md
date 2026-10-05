@@ -4,7 +4,7 @@
 
 ### Bug Fixes
 
-* **reads:** the cap also skips the newest-first query; a malformed FIRESTORE_NOTIFY_READS throws ([23f00de](https://github.com/huishouden/notify/commit/23f00de87de4a45f4d140b4499d1eeed0171024e))
+* **reads:** a malformed FIRESTORE_NOTIFY_READS throws instead of lifting the cap ([23f00de](https://github.com/huishouden/notify/commit/23f00de87de4a45f4d140b4499d1eeed0171024e))
 
 ### Performance
 

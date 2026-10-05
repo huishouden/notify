@@ -111,13 +111,14 @@ that entry is sent; otherwise the reminder's own `title` and `body`.
 
   `FIRESTORE_NOTIFY_READS` (`wrangler.toml`, 3,000 a day) caps that. The Worker keeps no state
   between runs, so the cap is spent per run: 1/288 of it (the cron's runs a day), 10 reads with
-  3,000. The oldest-first and personal queries always run, so a backlog of 50 or more due can still
-  cost up to 100 reads a run; past the run's share the newest-first query is skipped and further
-  households wait for a later run, unsent and unmarked (the
+  3,000. The due-reminder queries always run, so a backlog of 50 or more due can still cost up to
+  150 reads a run (the newest-first window is what lets other households past one household's
+  backlog); past the run's share, further households wait for a later run, unsent and unmarked (the
   first household of a run is always read, so a cap set too low slows sending rather than stopping
   it). At 3,000 a day: 576 for the quiet queries leaves ~2,400 for sending, about one household's
   reminders (~7 to 10 reads) every 5 minutes; with several households due in the same 5 minutes
-  the later ones go out up to 5 minutes later each. Unset or 0: no cap.
+  the later ones go out up to 5 minutes later each. Unset or 0: no cap. Any other value that isn't a non-negative number makes every run
+  throw (the `NotifyRun` error alert fires), so set it to digits only.
 - **iPhone and iPad** only show notifications for an app added to the Home Screen (Share > Add to
   Home Screen), on iOS/iPadOS 16.4 or later. In Safari tabs, and on older versions, there is no Web
   Push. `pushSupport()` in the kit says which case a device is in, so the app can explain.
