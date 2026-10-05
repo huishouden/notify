@@ -17,6 +17,25 @@ export interface Env {
    * (`huishouden-*.web.app`). A link anywhere else opens the app's own home instead. Unset: any https link.
    */
   LINK_HOSTS?: string;
+  /**
+   * Firestore document reads a day this Worker may spend on households (members, subscriptions,
+   * preferences, sources), of the project's free 50,000 shared with every app (README, "Limits"):
+   * 1/288 per run, past which households wait for a later run. The due-reminder queries come on
+   * top (2 reads a quiet run, 576 a day; up to 150 a run under a backlog). Unset or 0: no limit;
+   * any value that isn't a whole number makes every run throw.
+   */
+  FIRESTORE_NOTIFY_READS?: string;
+}
+
+/** Runs a day: wrangler.toml's `crons`, every 5 minutes. A schedule change changes this too. */
+export const RUNS_PER_DAY = 288;
+
+/** `FIRESTORE_NOTIFY_READS` as reads per run: Infinity when unset or 0; a value that isn't a number throws. */
+export function readsPerRun(value: string | undefined): number {
+  if (value === undefined || value.trim() === '') return Infinity;
+  const day = Number(value);
+  if (!Number.isInteger(day) || day < 0) throw new Error(`FIRESTORE_NOTIFY_READS must be a whole number of reads a day (wrangler.toml [vars]), not "${value}".`);
+  return day === 0 ? Infinity : Math.max(1, Math.floor(day / RUNS_PER_DAY));
 }
 
 /** `LINK_HOSTS` as patterns. */
@@ -131,10 +150,12 @@ export interface RunStats {
   /** Deleted unsent: its source says it is done (a bill paid, a task ticked, a dose given). */
   done: number;
   /**
-   * True when something due was left for a later run: held back by the per-household cap or the
-   * subrequest budget, or possibly beyond both read windows.
+   * True when something due was left for a later run: held back by the per-household cap, the
+   * subrequest budget or the read budget, or possibly beyond both read windows.
    */
   deferred: boolean;
+  /** Firestore document reads the run was billed for (`Firestore.reads`). */
+  reads: number;
 }
 
 class BudgetExhausted extends Error {}
@@ -320,9 +341,10 @@ async function loadHousehold(db: Firestore, id: string): Promise<Household> {
  * it, forget subscriptions the push service has dropped.
  */
 export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: string) => void = console.log): Promise<RunStats> {
-  const stats: RunStats = { due: 0, sent: 0, pushed: 0, failed: 0, removed: 0, late: 0, invalid: 0, raced: 0, noDevices: 0, capped: 0, done: 0, deferred: false };
+  const stats: RunStats = { due: 0, sent: 0, pushed: 0, failed: 0, removed: 0, late: 0, invalid: 0, raced: 0, noDevices: 0, capped: 0, done: 0, deferred: false, reads: 0 };
   if (!env.FIREBASE_PROJECT_ID) throw new Error('FIREBASE_PROJECT_ID is not set (wrangler.toml [vars]).');
   if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_KEY) throw new Error('VAPID_PUBLIC_KEY (wrangler.toml) and VAPID_PRIVATE_KEY (secret) must both be set.');
+  const maxReads = readsPerRun(env.FIRESTORE_NOTIFY_READS);
   const sa = parseServiceAccount(env.GOOGLE_SERVICE_ACCOUNT);
   const vapid: Vapid = await loadVapid(env.VAPID_PUBLIC_KEY, env.VAPID_PRIVATE_KEY, env.VAPID_SUBJECT || 'https://github.com/huishouden/notify');
   const budget = budgeted(fetchImpl, SUBREQUEST_BUDGET);
@@ -332,14 +354,8 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
   const db = new Firestore(env.FIREBASE_PROJECT_ID, () => (token ??= accessToken(sa, budget.fetch, now)), budget.fetch);
 
   try {
-    // Oldest first alone can be filled by one household's backlog; newest first reaches the rest.
-    const [oldest, newest, personal] = await Promise.all([
+    const [oldest, personal] = await Promise.all([
       db.dueReminders(now, BATCH, 'ASCENDING'),
-      db.dueReminders(now, BATCH, 'DESCENDING').catch((error: unknown) => {
-        if (error instanceof BudgetExhausted) throw error;
-        log(`newest-first query failed, using the oldest-first window only: ${error instanceof Error ? redact(error.message) : String(error)}`);
-        return null;
-      }),
       // Reminders for named members only; while its index is missing or building, the run goes on without them.
       db.dueReminders(now, BATCH, 'ASCENDING', 'personalReminders').catch((error: unknown) => {
         if (error instanceof BudgetExhausted) throw error;
@@ -347,6 +363,19 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
         return [] as RestDocument[];
       }),
     ]);
+    // Oldest first alone can be filled by one household's backlog; newest first then reaches the
+    // rest. A window that isn't full already holds everything due, so the second query (billed a
+    // read even when empty) runs only when it is.
+    const newest =
+      oldest.length < BATCH
+        ? []
+        : await db.dueReminders(now, BATCH, 'DESCENDING').catch((error: unknown) => {
+            if (error instanceof BudgetExhausted) throw error;
+            log(`newest-first query failed, using the oldest-first window only: ${error instanceof Error ? redact(error.message) : String(error)}`);
+            return null;
+          });
+    // The share is for household reads; the queries are counted apart (README, "Limits").
+    const queryReads = db.reads;
     const docs = new Map<string, RestDocument>();
     for (const doc of [...oldest, ...(newest ?? [])]) docs.set(doc.name, doc);
     // Windows that overlap cover everything due between them.
@@ -387,6 +416,14 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
         const paths = sourcePaths(order.filter((r) => r.householdId === reminder.householdId));
         const reads = 3 + (paths.length ? 1 : 0);
         if (spare < reads + 1) {
+          left++;
+          continue;
+        }
+        // The read budget: at least the household document, its two lists and the sources. The
+        // first household of a run is always read, so a budget set too low slows sending down
+        // rather than stopping it; the rest wait for a later run, still unsent.
+        if (households.size > 0 && db.reads - queryReads + 3 + paths.length > maxReads) {
+          blocked.add(reminder.householdId);
           left++;
           continue;
         }
@@ -474,5 +511,6 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
     if (!(error instanceof BudgetExhausted)) throw error;
     stats.deferred = true;
   }
+  stats.reads = db.reads;
   return stats;
 }

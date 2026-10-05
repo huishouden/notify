@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.3.0](https://github.com/huishouden/notify/compare/v0.2.0...v0.3.0) (2026-10-05)
+
+### Bug Fixes
+
+* **reads:** a malformed FIRESTORE_NOTIFY_READS throws instead of lifting the cap ([23f00de](https://github.com/huishouden/notify/commit/23f00de87de4a45f4d140b4499d1eeed0171024e))
+
+### Performance
+
+* newest-first query only when needed (576 reads a day when quiet, was 864); reads counted per run (`reads`) and household reads capped by FIRESTORE_NOTIFY_READS ([bfb11ad](https://github.com/huishouden/notify/commit/bfb11ad000ffa9fb2f4b8bf0fd4ab409641116af))
+
 ## [0.2.0](https://github.com/huishouden/notify/compare/v0.1.0...v0.2.0) (2026-10-05)
 
 ### Features

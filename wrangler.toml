@@ -25,3 +25,8 @@ VAPID_SUBJECT = "https://github.com/huishouden/notify"
 LINK_HOSTS = "huishouden-piekstra.web.app huishouden-*.web.app"
 # New Relic account for the NotifyRun heartbeat (public; the ingest key is a secret).
 NEW_RELIC_ACCOUNT_ID = "8578044"
+# Firestore reads a day this Worker may spend on households, of the free plan's 50,000 shared with
+# every app and the other Workers (README, "Limits"): 1/288 of it per run (the cron's runs a day),
+# past which households wait for a later run; the due-reminder queries (576 a day quiet) come on
+# top. Digits only: anything else makes every run throw.
+FIRESTORE_NOTIFY_READS = "3000"

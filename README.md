@@ -15,12 +15,14 @@ Every 5 minutes:
 1. Gets an access token for its Google service account (a JWT signed in the Worker, exchanged at
    Google's token endpoint), which may read and write Firestore and nothing else.
 2. Asks Firestore for reminders across all households that are unsent and due (collection group
-   `reminders`, `sent == false`, `at <= now`) twice at once: the 50 oldest and the 50 newest. One
-   household's backlog can fill the oldest 50 on its own; the newest 50 still reach everyone
-   else. While the newest-first index is missing or building, the run logs one line and uses the
-   oldest 50 alone. A third query reads the 50 oldest due `personalReminders` (reminders for named
-   members only, pwa-kit `./audience`: Health's medicine reminders); they join the same pool. While
-   its index is missing, the run logs one line and sends the shared ones.
+   `reminders`, `sent == false`, `at <= now`): the 50 oldest, and only when those fill the window,
+   the 50 newest too. One household's backlog can fill the oldest 50 on its own; the newest 50
+   still reach everyone else. A window that isn't full already holds everything due, so the second
+   query (billed a read even when empty) is skipped. While the newest-first index is missing or
+   building, the run logs one line and uses the oldest 50 alone. Alongside the first, a query reads
+   the 50 oldest due `personalReminders` (reminders for named members only, pwa-kit `./audience`:
+   Health's medicine reminders); they join the same pool. While its index is missing, the run logs
+   one line and sends the shared ones.
 3. Shares the run fairly between households: each household's due reminders oldest first, the
    households in order of their oldest due reminder, then round by round, every household's first
    reminder before any household's second. At most 10 per household per run; the rest are counted
@@ -69,8 +71,8 @@ malformed ones (`invalid`), in the same `batchWrite` as the claims.
 
 Each run logs one line of counts (`due`, `sent`, `pushed`, `failed`, `removed`, `late`,
 `invalid`, `raced`, `noDevices`, `capped`, `done`: deleted unsent because their source is done,
-and `deferred`: something due was left for a later
-run).
+`deferred`: something due was left for a later
+run, and `reads`: the Firestore reads the run was billed).
 
 The push message is JSON the kit's service worker shows: `{ title, body, url, tag, app }`;
 tapping it opens `url` in the app. Each device gets it in its own language: when the reminder has
@@ -92,15 +94,32 @@ that entry is sent; otherwise the reminder's own `title` and `body`.
 
 - **5-minute granularity.** A reminder due at 08:00 arrives between 08:00 and about 08:05.
 - **Cloudflare free plan**: 100,000 requests a day (the schedule uses 288), 50 outgoing requests
-  per run and 10 ms of CPU per run. A run uses one request for the token, three for the queries,
+  per run and 10 ms of CPU per run. A run uses one request for the token, two or three for the queries,
   three per household (four when its due reminders have a source), one `batchWrite` and one per device, plus deletes of dropped subscriptions
   when requests are left, and stays within 45; whatever didn't fit goes out 5 minutes later.
   The encryption is done by the runtime's native WebCrypto, well inside the CPU limit for the
   number of devices a run can reach.
-- **Firestore free tier**: each run reads at most 150 due reminders (the shared windows overlap
-  when fewer are due) plus each involved household, its subscriptions and the records its due
-  reminders name as their source, and an empty run costs
-  three reads (one per query); about 900 reads a day when idle, against 50,000.
+- **Firestore reads**: the project's free 50,000 a day are shared with every app and the other
+  Workers, and once they are gone every app's reads fail until midnight Pacific. Firestore bills
+  each document a query returns and at least one read per query, even an empty one, and each
+  document a `get` or `batchGet` asks for. A quiet run makes two queries: **2 reads, 576 a day**
+  (three queries and 864 a day before the newest-first query became conditional). A run with
+  something due adds the due reminders (at most 150), and per household its document, its
+  subscriptions and notification preferences (at least one read each) and the records its
+  reminders name as their source. Each run counts what it was billed (`reads` in the log line and
+  the `NotifyRun` event).
+
+  `FIRESTORE_NOTIFY_READS` (`wrangler.toml`, 3,000 a day) caps the household reads. The Worker
+  keeps no state between runs, so the cap is spent per run: 1/288 of it (the cron's runs a day),
+  10 reads with 3,000, about one household's members, subscriptions and preferences. Past it,
+  further households wait for a later run, unsent and unmarked; the first household of a run is
+  always read, so a cap set too low slows sending rather than stopping it. With several households
+  due in the same 5 minutes, the later ones go out up to 5 minutes later each. The due-reminder
+  queries come on top and always run: 576 a day when quiet, up to 150 a run under a backlog of 50
+  or more (the newest-first window is what lets other households past one household's backlog).
+  So the Worker's day is at most about 576 + 3,000 reads outside a backlog. Unset or 0: no cap.
+  Any other value that isn't a whole number (digits only, such as 3000) makes every run throw (the
+  `NotifyRun` error alert fires).
 - **iPhone and iPad** only show notifications for an app added to the Home Screen (Share > Add to
   Home Screen), on iOS/iPadOS 16.4 or later. In Safari tabs, and on older versions, there is no Web
   Push. `pushSupport()` in the kit says which case a device is in, so the app can explain.
@@ -178,7 +197,7 @@ try a run locally: put the two secrets in `.dev.vars` (git-ignored), `bun run de
 
 ### Monitoring
 
-Each run sends one `NotifyRun` event (the run's counts, its duration and, if it threw, the error
+Each run sends one `NotifyRun` event (the run's counts, the Firestore `reads` it was billed, its duration and, if it threw, the error
 message; never reminder text, households or addresses) to New Relic's Event API, where alerts fire
 when no run arrives for 20 minutes, a run throws, or more than 5 pushes fail in an hour (the
 `failed` count; pwa-kit `docs/observability.md`). A heartbeat that can't be sent is logged. It uses one of
