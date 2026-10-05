@@ -1,6 +1,8 @@
 import { accessToken, parseServiceAccount, type Fetch } from './google';
 import { decodeFields, documentPath, Firestore, type RestDocument, type WriteOutcome } from './firestore';
 import { loadVapid, pushRequest, type SubscriptionKeys, type Vapid } from './webpush';
+import { redact } from './redact';
+import { readSource, sourceAllowed, sourceReads, stillDue, type ReminderSource, type SourceDocs } from '@huishouden/pwa-kit/reminder-source';
 
 export interface Env {
   FIREBASE_PROJECT_ID: string;
@@ -74,6 +76,13 @@ export interface Reminder {
    * `inEveryLang`): each device gets the one its subscription's `lang` names, else `title`/`body`.
    */
   texts: Partial<Record<Lang, { title: string; body: string }>>;
+  /**
+   * The records it is about and when it is still due (pwa-kit `./reminder-source`): one no longer
+   * due is deleted instead of sent. Null without one, or with one past the kit's limits.
+   */
+  source: ReminderSource | null;
+  /** Who wrote it (the rules make it the signed-in writer when it has a source); decides whether its source is used. */
+  by: string;
   doc: RestDocument;
 }
 
@@ -119,6 +128,8 @@ export interface RunStats {
   noDevices: number;
   /** Held back by `PER_HOUSEHOLD_CAP`, for a later run. */
   capped: number;
+  /** Deleted unsent: its source says it is done (a bill paid, a task ticked, a dose given). */
+  done: number;
   /**
    * True when something due was left for a later run: held back by the per-household cap or the
    * subrequest budget, or possibly beyond both read windows.
@@ -151,7 +162,7 @@ export function toReminder(doc: RestDocument, hosts: RegExp[] = []): Reminder | 
   if (personal && audience.length === 0) return null;
   const url = safeLink(d.url, hosts);
   const isPrivate = d.private !== false || MONEY_APPS.includes(d.app);
-  return { id: path[3], householdId: path[1], app: d.app, title: d.title, body: typeof d.body === 'string' ? d.body : '', at: d.at, url, recipients, private: isPrivate, personal, audience, texts: toTexts(d.texts), doc };
+  return { id: path[3], householdId: path[1], app: d.app, title: d.title, body: typeof d.body === 'string' ? d.body : '', at: d.at, url, recipients, private: isPrivate, personal, audience, texts: toTexts(d.texts), source: readSource(d.app, d.source), by: typeof d.by === 'string' ? d.by.toLowerCase() : '', doc };
 }
 
 export function toSubscription(doc: RestDocument): Subscription | null {
@@ -251,6 +262,43 @@ export function fairOrder(reminders: Reminder[], cap = PER_HOUSEHOLD_CAP): { ord
   return { order, capped };
 }
 
+/** Every distinct document the reminders' sources need read (pwa-kit `sourceReads`), under their household. */
+export function sourcePaths(reminders: Reminder[]): string[] {
+  return [...new Set(reminders.flatMap((r) => (r.source ? sourceReads(r.app, r.source).map((doc) => `households/${r.householdId}/${doc}`) : [])))];
+}
+
+/**
+ * Whether the reminder's source says it is done. Only a source its writer may use counts (pwa-kit
+ * `sourceAllowed`: a current member whose role may read those records, and for Health records one
+ * of the person's readers), so it never reveals anything the writer couldn't see; any other, or one
+ * whose records weren't read, leaves the reminder going out as before.
+ */
+export function sourceDone(reminder: Reminder, household: Pick<Household, 'members' | 'roles'>, read: SourceDocs): boolean {
+  if (!reminder.source) return false;
+  const members = household.members.map((m) => m.toLowerCase());
+  if (!reminder.by || !members.includes(reminder.by)) return false;
+  if (sourceAllowed(reminder.app, reminder.source, reminder.by, roleOf(reminder.by, members, household.roles), read, { personal: reminder.personal }) !== true) return false;
+  return stillDue(reminder.source, read) === false;
+}
+
+/**
+ * The documents reminders' sources name, read in one request, by path under the household
+ * ("bills/b1"). A read that fails is logged and leaves the map empty: those reminders go out as
+ * they did before sources existed.
+ */
+async function loadSources(db: Firestore, householdId: string, paths: string[], log: (line: string) => void): Promise<SourceDocs> {
+  const prefix = `households/${householdId}/`;
+  const out: SourceDocs = new Map();
+  if (paths.length === 0) return out;
+  try {
+    for (const [path, fields] of await db.getAll(paths)) if (path.startsWith(prefix)) out.set(path.slice(prefix.length), fields);
+  } catch (error) {
+    if (error instanceof BudgetExhausted) throw error;
+    log(`source read failed, sending without it: ${error instanceof Error ? redact(error.message) : String(error)}`);
+  }
+  return out;
+}
+
 async function loadHousehold(db: Firestore, id: string): Promise<Household> {
   const [home, subs, prefs] = await Promise.all([
     db.get(`households/${id}`),
@@ -272,7 +320,7 @@ async function loadHousehold(db: Firestore, id: string): Promise<Household> {
  * it, forget subscriptions the push service has dropped.
  */
 export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: string) => void = console.log): Promise<RunStats> {
-  const stats: RunStats = { due: 0, sent: 0, pushed: 0, failed: 0, removed: 0, late: 0, invalid: 0, raced: 0, noDevices: 0, capped: 0, deferred: false };
+  const stats: RunStats = { due: 0, sent: 0, pushed: 0, failed: 0, removed: 0, late: 0, invalid: 0, raced: 0, noDevices: 0, capped: 0, done: 0, deferred: false };
   if (!env.FIREBASE_PROJECT_ID) throw new Error('FIREBASE_PROJECT_ID is not set (wrangler.toml [vars]).');
   if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_KEY) throw new Error('VAPID_PUBLIC_KEY (wrangler.toml) and VAPID_PRIVATE_KEY (secret) must both be set.');
   const sa = parseServiceAccount(env.GOOGLE_SERVICE_ACCOUNT);
@@ -289,13 +337,13 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
       db.dueReminders(now, BATCH, 'ASCENDING'),
       db.dueReminders(now, BATCH, 'DESCENDING').catch((error: unknown) => {
         if (error instanceof BudgetExhausted) throw error;
-        log(`newest-first query failed, using the oldest-first window only: ${error instanceof Error ? error.message.slice(0, 200) : String(error)}`);
+        log(`newest-first query failed, using the oldest-first window only: ${error instanceof Error ? redact(error.message) : String(error)}`);
         return null;
       }),
       // Reminders for named members only; while its index is missing or building, the run goes on without them.
       db.dueReminders(now, BATCH, 'ASCENDING', 'personalReminders').catch((error: unknown) => {
         if (error instanceof BudgetExhausted) throw error;
-        log(`personal reminders query failed, sending shared reminders only: ${error instanceof Error ? error.message.slice(0, 200) : String(error)}`);
+        log(`personal reminders query failed, sending shared reminders only: ${error instanceof Error ? redact(error.message) : String(error)}`);
         return [] as RestDocument[];
       }),
     ]);
@@ -318,11 +366,14 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
     const { order, capped } = fairOrder(sendable);
     stats.capped = capped;
 
-    // Choose what fits: household reads, then every push of each chosen reminder, keeping one
-    // request for the batchWrite that marks and claims them all.
+    // Choose what fits: household reads (with one batchGet of the records its reminders' sources
+    // name), then every push of each chosen reminder, keeping one request for the batchWrite that
+    // marks and claims them all and deletes those no longer due.
     const households = new Map<string, Household>();
+    const sources = new Map<string, SourceDocs>();
     const blocked = new Set<string>();
     const chosen: { reminder: Reminder; to: Subscription[] }[] = [];
+    const finished: Reminder[] = [];
     let pushes = 0;
     let left = 0;
     for (const reminder of order) {
@@ -333,13 +384,21 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
       let spare = budget.remaining() - 1 - pushes;
       let household = households.get(reminder.householdId);
       if (!household) {
-        if (spare < 4) {
+        const paths = sourcePaths(order.filter((r) => r.householdId === reminder.householdId));
+        const reads = 3 + (paths.length ? 1 : 0);
+        if (spare < reads + 1) {
           left++;
           continue;
         }
-        household = await loadHousehold(db, reminder.householdId);
+        const [loaded, read] = await Promise.all([loadHousehold(db, reminder.householdId), loadSources(db, reminder.householdId, paths, log)]);
+        household = loaded;
         households.set(reminder.householdId, household);
-        spare -= 3;
+        sources.set(reminder.householdId, read);
+        spare -= reads;
+      }
+      if (sourceDone(reminder, household, sources.get(reminder.householdId) ?? new Map())) {
+        finished.push(reminder);
+        continue;
       }
       let to = targets(reminder, household.members, household.subscriptions, household.roles, household.muted);
       // Claimed only when every push fits in this run: never sent twice, never half.
@@ -359,19 +418,20 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
     }
     stats.deferred = left > 0 || capped > 0 || unread;
 
-    const outcomes = await db.markSent([...marks.map((m) => m.doc), ...chosen.map((c) => c.reminder.doc)], now);
+    const outcomes = await db.commit({ mark: [...marks.map((m) => m.doc), ...chosen.map((c) => c.reminder.doc)], remove: finished.map((r) => r.doc) }, now);
     const errors: string[] = [];
     const count = (outcome: WriteOutcome, ok: () => void) => {
       if (outcome.ok) ok();
       else if (outcome.raced) stats.raced++;
       else errors.push(outcome.error);
     };
-    marks.forEach((m, i) => count(outcomes[i], () => stats[m.kind]++));
+    marks.forEach((m, i) => count(outcomes.marked[i], () => stats[m.kind]++));
     const claimed = chosen.filter((c, i) => {
       let ok = false;
-      count(outcomes[marks.length + i], () => (ok = true));
+      count(outcomes.marked[marks.length + i], () => (ok = true));
       return ok;
     });
+    outcomes.removed.forEach((outcome) => count(outcome, () => stats.done++));
 
     stats.sent = claimed.length;
     const deliveries = claimed.flatMap(({ reminder, to }) => {
@@ -409,7 +469,7 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
       }),
     );
 
-    if (errors.length) throw new Error(`Firestore batchWrite: ${errors.length} of ${outcomes.length} writes failed (${errors[0]})`);
+    if (errors.length) throw new Error(`Firestore batchWrite: ${errors.length} of ${outcomes.marked.length + outcomes.removed.length} writes failed (${errors[0]})`);
   } catch (error) {
     if (!(error instanceof BudgetExhausted)) throw error;
     stats.deferred = true;
