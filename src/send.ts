@@ -19,18 +19,22 @@ export interface Env {
   LINK_HOSTS?: string;
   /**
    * Firestore document reads a day this Worker may use, of the project's free 50,000 shared with
-   * every app (README, "Firestore reads"). Spent per run, a 288th each; unset or 0: no limit.
+   * every app (README, "Limits"), spent 1/288 per run. Past a run's share, households wait for a
+   * later run and the newest-first query is skipped; the oldest-first and personal queries always
+   * run (2 reads when nothing is due, up to 100 under a backlog). Unset or 0: no limit.
    */
   FIRESTORE_NOTIFY_READS?: string;
 }
 
-/** Runs a day: the cron fires every 5 minutes. */
+/** Runs a day: wrangler.toml's `crons`, every 5 minutes. A schedule change changes this too. */
 export const RUNS_PER_DAY = 288;
 
-/** `FIRESTORE_NOTIFY_READS` as reads per run, or Infinity when unset. */
+/** `FIRESTORE_NOTIFY_READS` as reads per run: Infinity when unset or 0; a value that isn't a number throws. */
 export function readsPerRun(value: string | undefined): number {
+  if (value === undefined || value.trim() === '') return Infinity;
   const day = Number(value);
-  return Number.isFinite(day) && day > 0 ? Math.max(1, Math.floor(day / RUNS_PER_DAY)) : Infinity;
+  if (!Number.isFinite(day) || day < 0) throw new Error(`FIRESTORE_NOTIFY_READS must be a whole number of reads a day (wrangler.toml [vars]), not "${value}".`);
+  return day === 0 ? Infinity : Math.max(1, Math.floor(day / RUNS_PER_DAY));
 }
 
 /** `LINK_HOSTS` as patterns. */
@@ -339,6 +343,7 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
   const stats: RunStats = { due: 0, sent: 0, pushed: 0, failed: 0, removed: 0, late: 0, invalid: 0, raced: 0, noDevices: 0, capped: 0, done: 0, deferred: false, reads: 0 };
   if (!env.FIREBASE_PROJECT_ID) throw new Error('FIREBASE_PROJECT_ID is not set (wrangler.toml [vars]).');
   if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_KEY) throw new Error('VAPID_PUBLIC_KEY (wrangler.toml) and VAPID_PRIVATE_KEY (secret) must both be set.');
+  const maxReads = readsPerRun(env.FIRESTORE_NOTIFY_READS);
   const sa = parseServiceAccount(env.GOOGLE_SERVICE_ACCOUNT);
   const vapid: Vapid = await loadVapid(env.VAPID_PUBLIC_KEY, env.VAPID_PRIVATE_KEY, env.VAPID_SUBJECT || 'https://github.com/huishouden/notify');
   const budget = budgeted(fetchImpl, SUBREQUEST_BUDGET);
@@ -346,8 +351,6 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
   let token: Promise<string> | undefined;
   const hosts = linkHosts(env.LINK_HOSTS);
   const db = new Firestore(env.FIREBASE_PROJECT_ID, () => (token ??= accessToken(sa, budget.fetch, now)), budget.fetch);
-
-  const maxReads = readsPerRun(env.FIRESTORE_NOTIFY_READS);
 
   try {
     const [oldest, personal] = await Promise.all([
@@ -361,10 +364,12 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
     ]);
     // Oldest first alone can be filled by one household's backlog; newest first then reaches the
     // rest. A window that isn't full already holds everything due, so the second query (billed a
-    // read even when empty) runs only when it is.
+    // read even when empty) runs only when it is, and the run's read share isn't spent yet.
     const newest =
       oldest.length < BATCH
         ? []
+        : db.reads >= maxReads
+          ? null
         : await db.dueReminders(now, BATCH, 'DESCENDING').catch((error: unknown) => {
             if (error instanceof BudgetExhausted) throw error;
             log(`newest-first query failed, using the oldest-first window only: ${error instanceof Error ? redact(error.message) : String(error)}`);
@@ -502,7 +507,6 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
 
     if (errors.length) throw new Error(`Firestore batchWrite: ${errors.length} of ${outcomes.marked.length + outcomes.removed.length} writes failed (${errors[0]})`);
   } catch (error) {
-    stats.reads = db.reads;
     if (!(error instanceof BudgetExhausted)) throw error;
     stats.deferred = true;
   }

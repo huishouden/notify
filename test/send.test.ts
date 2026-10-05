@@ -324,10 +324,11 @@ describe('fairOrder', () => {
 });
 
 describe('readsPerRun', () => {
-  test('a 288th of the day, at least one; unset, zero or nonsense: no limit', () => {
+  test('1/288 of the day, at least one; unset or zero: no limit; anything else throws', () => {
     expect(readsPerRun('3000')).toBe(10);
     expect(readsPerRun('100')).toBe(1);
-    for (const v of [undefined, '', '0', '-5', 'lots']) expect(readsPerRun(v)).toBe(Infinity);
+    for (const v of [undefined, '', '0']) expect(readsPerRun(v)).toBe(Infinity);
+    for (const v of ['-5', 'lots', '3,000', '3k']) expect(() => readsPerRun(v)).toThrow('FIRESTORE_NOTIFY_READS');
   });
 });
 
@@ -530,6 +531,13 @@ describe('run', () => {
     resetTokenCache();
     const open = stubFetch(routes({ due: dueBoth }));
     expect(await run(await testEnv(), NOW, open.fetchImpl, quiet)).toMatchObject({ sent: 2, deferred: false });
+  });
+
+  test('a full oldest-first window past the run\'s share skips the newest-first query', async () => {
+    const { fetchImpl, calls } = stubFetch(routes({ due: backlog('h1', 60, NOW - 1000) }));
+    const stats = await run({ ...(await testEnv()), FIRESTORE_NOTIFY_READS: '2880' }, NOW, fetchImpl, quiet);
+    expect(calls.filter((c) => c.url.endsWith(':runQuery')).map(directionOf)).toEqual(['ASCENDING', 'ASCENDING']);
+    expect(stats).toMatchObject({ sent: PER_HOUSEHOLD_CAP, deferred: true });
   });
 
   test('a budget too small for any household still sends the first one each run', async () => {

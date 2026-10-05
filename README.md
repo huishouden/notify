@@ -71,8 +71,8 @@ malformed ones (`invalid`), in the same `batchWrite` as the claims.
 
 Each run logs one line of counts (`due`, `sent`, `pushed`, `failed`, `removed`, `late`,
 `invalid`, `raced`, `noDevices`, `capped`, `done`: deleted unsent because their source is done,
-and `deferred`: something due was left for a later
-run).
+`deferred`: something due was left for a later
+run, and `reads`: the Firestore reads the run was billed).
 
 The push message is JSON the kit's service worker shows: `{ title, body, url, tag, app }`;
 tapping it opens `url` in the app. Each device gets it in its own language: when the reminder has
@@ -110,8 +110,10 @@ that entry is sent; otherwise the reminder's own `title` and `body`.
   the `NotifyRun` event).
 
   `FIRESTORE_NOTIFY_READS` (`wrangler.toml`, 3,000 a day) caps that. The Worker keeps no state
-  between runs, so the cap is spent per run: a 288th of it, 10 reads with 3,000. The queries always
-  run; past the run's share, further households wait for a later run, unsent and unmarked (the
+  between runs, so the cap is spent per run: 1/288 of it (the cron's runs a day), 10 reads with
+  3,000. The oldest-first and personal queries always run, so a backlog of 50 or more due can still
+  cost up to 100 reads a run; past the run's share the newest-first query is skipped and further
+  households wait for a later run, unsent and unmarked (the
   first household of a run is always read, so a cap set too low slows sending rather than stopping
   it). At 3,000 a day: 576 for the quiet queries leaves ~2,400 for sending, about one household's
   reminders (~7 to 10 reads) every 5 minutes; with several households due in the same 5 minutes

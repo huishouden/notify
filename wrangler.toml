@@ -26,5 +26,6 @@ LINK_HOSTS = "huishouden-piekstra.web.app huishouden-*.web.app"
 # New Relic account for the NotifyRun heartbeat (public; the ingest key is a secret).
 NEW_RELIC_ACCOUNT_ID = "8578044"
 # Firestore reads a day this Worker may use, of the free plan's 50,000 shared with every app and
-# the other Workers (README, "Limits"): spent a 288th per run; households past it wait 5 minutes.
+# the other Workers (README, "Limits"): spent 1/288 of it per run (the cron's runs a day);
+# households past a run's share wait for a later run.
 FIRESTORE_NOTIFY_READS = "3000"
