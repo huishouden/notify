@@ -22,7 +22,7 @@ export interface HeartbeatEnv {
 export const HEARTBEAT_SUBREQUESTS = 1;
 
 /** Counts sent with each run. A new `RunStats` field is not sent until it is listed here. */
-const COUNTS = ['due', 'sent', 'pushed', 'failed', 'removed', 'late', 'invalid', 'raced', 'noDevices', 'capped', 'done', 'deferred'] as const satisfies readonly (keyof RunStats)[];
+const COUNTS = ['due', 'sent', 'pushed', 'failed', 'removed', 'late', 'invalid', 'raced', 'noDevices', 'capped', 'done', 'deferred', 'reads'] as const satisfies readonly (keyof RunStats)[];
 
 
 export function heartbeatEvent(stats: RunStats | null, error: unknown, durationMs: number, scheduledTime: number): Record<string, string | number | boolean> {

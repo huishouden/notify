@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, test } from 'bun:test';
 import { fromB64url, type Bytes } from '../src/b64';
 import { importKeyPair, deriveKeys } from '../src/webpush';
 import { resetTokenCache } from '../src/google';
-import { fairOrder, sourceDone, linkHosts, payload, toTexts, PER_HOUSEHOLD_CAP, roleOf, run, safeLink, SUBREQUEST_BUDGET, targets, toMuted, toReminder, toSubscription, type Subscription } from '../src/send';
+import { fairOrder, readsPerRun, sourceDone, linkHosts, payload, toTexts, PER_HOUSEHOLD_CAP, roleOf, run, safeLink, SUBREQUEST_BUDGET, targets, toMuted, toReminder, toSubscription, type Subscription } from '../src/send';
 import due from './fixtures/due-reminders.json';
 import household from './fixtures/household-h1.json';
 import subscriptions from './fixtures/subscriptions-h1.json';
@@ -323,15 +323,25 @@ describe('fairOrder', () => {
   });
 });
 
+describe('readsPerRun', () => {
+  test('a 288th of the day, at least one; unset, zero or nonsense: no limit', () => {
+    expect(readsPerRun('3000')).toBe(10);
+    expect(readsPerRun('100')).toBe(1);
+    for (const v of [undefined, '', '0', '-5', 'lots']) expect(readsPerRun(v)).toBe(Infinity);
+  });
+});
+
 describe('run', () => {
   test('sends what is due, marks it sent, removes subscriptions the push service dropped', async () => {
     const { fetchImpl, calls } = stubFetch(routes());
     const stats = await run(await testEnv(), NOW, fetchImpl, quiet);
     // Both reminders reach the dropped laptop; it is deleted once.
-    expect(stats).toEqual({ due: 3, sent: 2, pushed: 3, failed: 2, removed: 1, late: 1, invalid: 0, raced: 0, noDevices: 0, capped: 0, done: 0, deferred: false });
+    // Reads: 3 due and the empty personal query (1), the household (1), its 5 subscriptions and no prefs (1).
+    expect(stats).toEqual({ due: 3, sent: 2, pushed: 3, failed: 2, removed: 1, late: 1, invalid: 0, raced: 0, noDevices: 0, capped: 0, done: 0, deferred: false, reads: 11 });
 
+    // The oldest-first window isn't full, so it holds everything due: no newest-first query.
     const queries = calls.filter((c) => c.url.endsWith(':runQuery'));
-    expect(queries.map((q) => `${collectionOf(q)} ${directionOf(q)}`)).toEqual(['reminders ASCENDING', 'reminders DESCENDING', 'personalReminders ASCENDING']);
+    expect(queries.map((q) => `${collectionOf(q)} ${directionOf(q)}`)).toEqual(['reminders ASCENDING', 'personalReminders ASCENDING']);
     expect(queries[0].body).toEqual({
       structuredQuery: {
         from: [{ collectionId: 'reminders', allDescendants: true }],
@@ -479,12 +489,52 @@ describe('run', () => {
 
   test('falls back to the oldest-first window, with one log line, while the newest-first index is missing', async () => {
     const lines: string[] = [];
-    const { fetchImpl, calls } = stubFetch(routes({ newest: () => json(indexMissing, 400) }));
+    // A full oldest-first window, so the newest-first query is asked for.
+    const { fetchImpl } = stubFetch(routes({ due: backlog('h1', 50, NOW - 1000), newest: () => json(indexMissing, 400) }));
     const stats = await run(await testEnv(), NOW, fetchImpl, (l) => lines.push(l));
-    expect(stats).toMatchObject({ due: 3, sent: 2, late: 1, deferred: false });
+    expect(stats).toMatchObject({ due: 50, sent: PER_HOUSEHOLD_CAP, deferred: true });
     expect(lines).toHaveLength(1);
     expect(lines[0]).toStartWith('newest-first query failed, using the oldest-first window only: [400] Firestore runQuery: FAILED_PRECONDITION The query requires an index.');
-    expect(calls.filter(isPush)).toHaveLength(5);
+  });
+
+  test('the newest-first query runs only when the oldest-first window is full', async () => {
+    const run49 = stubFetch(routes({ due: backlog('h1', 49, NOW - 1000) }));
+    await run(await testEnv(), NOW, run49.fetchImpl, quiet);
+    expect(run49.calls.filter((c) => c.url.endsWith(':runQuery')).map(directionOf)).toEqual(['ASCENDING', 'ASCENDING']);
+    resetTokenCache();
+    const run50 = stubFetch(routes({ due: backlog('h1', 50, NOW - 1000) }));
+    await run(await testEnv(), NOW, run50.fetchImpl, quiet);
+    expect(run50.calls.filter((c) => c.url.endsWith(':runQuery')).map((c) => `${collectionOf(c)} ${directionOf(c)}`)).toEqual([
+      'reminders ASCENDING',
+      'personalReminders ASCENDING',
+      'reminders DESCENDING',
+    ]);
+  });
+
+  test('a quiet run is billed two reads: the two empty queries', async () => {
+    const { fetchImpl, calls } = stubFetch(routes({ due: [] }));
+    const stats = await run(await testEnv(), NOW, fetchImpl, quiet);
+    expect(stats).toMatchObject({ due: 0, sent: 0, reads: 2, deferred: false });
+    expect(calls.filter((c) => c.url.startsWith('https://firestore.googleapis.com'))).toHaveLength(2);
+  });
+
+  test('FIRESTORE_NOTIFY_READS: households past the run\'s share wait for a later run, unsent and unmarked', async () => {
+    const dueBoth = byAt([dueDoc('h1', 'a', NOW - 2000), dueDoc('h2', 'b', NOW - 1000)]);
+    // 2,880 a day is 10 a run: the queries (3) and h1 (1 + 5 subscriptions + 1) use 10, so h2 waits.
+    const tight = stubFetch(routes({ due: dueBoth }));
+    const stats = await run({ ...(await testEnv()), FIRESTORE_NOTIFY_READS: '2880' }, NOW, tight.fetchImpl, quiet);
+    expect(stats).toMatchObject({ due: 2, sent: 1, deferred: true, reads: 10 });
+    expect(writesOf(tight.calls)[0].map((w) => shortName(w.update.name))).toEqual(['households/h1/reminders/a']);
+    expect(tight.calls.some((c) => c.url.includes('/households/h2'))).toBe(false);
+    // Unset: both go.
+    resetTokenCache();
+    const open = stubFetch(routes({ due: dueBoth }));
+    expect(await run(await testEnv(), NOW, open.fetchImpl, quiet)).toMatchObject({ sent: 2, deferred: false });
+  });
+
+  test('a budget too small for any household still sends the first one each run', async () => {
+    const { fetchImpl } = stubFetch(routes({ due: [dueDoc('h1', 'a', NOW - 1000)] }));
+    expect(await run({ ...(await testEnv()), FIRESTORE_NOTIFY_READS: '1' }, NOW, fetchImpl, quiet)).toMatchObject({ sent: 1 });
   });
 
   test('stops within the subrequest budget, never claiming a reminder it cannot finish', async () => {
@@ -524,9 +574,9 @@ describe('run', () => {
     const lines: string[] = [];
     const { fetchImpl, calls } = stubFetch(routes({ due: [due[0]], subs: () => manyDevices(60) }));
     const stats = await run(await testEnv(), NOW, fetchImpl, (l) => lines.push(l));
-    // Token, three queries, three household reads and the batchWrite leave 37.
-    expect(stats).toMatchObject({ sent: 1, pushed: 37 });
-    expect(lines).toEqual(['reminder has 60 devices; sending to 37']);
+    // Token, two queries, three household reads and the batchWrite leave 38.
+    expect(stats).toMatchObject({ sent: 1, pushed: 38 });
+    expect(lines).toEqual(['reminder has 60 devices; sending to 38']);
     expect(calls).toHaveLength(SUBREQUEST_BUDGET);
   });
 

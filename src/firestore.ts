@@ -48,6 +48,11 @@ export function documentPath(name: string): string[] {
 
 export class Firestore {
   readonly root: string;
+  /**
+   * Document reads this client has been billed for so far: each document a query returns, at least
+   * one per query even when it returns none; each document a get or batchGet asks for, found or not.
+   */
+  reads = 0;
   constructor(
     readonly projectId: string,
     private readonly token: () => Promise<string>,
@@ -80,11 +85,14 @@ export class Firestore {
   async dueReminders(now: number, limit: number, direction: Direction = 'ASCENDING', collectionId: ReminderCollection = 'reminders'): Promise<RestDocument[]> {
     const { status, body } = await this.call<{ document?: RestDocument }[]>('POST', `${this.root}:runQuery`, dueRemindersQuery(now, limit, direction, collectionId));
     if (status !== 200) throw Firestore.fail('runQuery', status, body);
-    return body.filter((r) => r.document).map((r) => r.document!);
+    const docs = body.filter((r) => r.document).map((r) => r.document!);
+    this.reads += Math.max(1, docs.length);
+    return docs;
   }
 
   async get(path: string): Promise<RestDocument | null> {
     const { status, body } = await this.call<RestDocument>('GET', `${this.root}/${path}`);
+    if (status === 200 || status === 404) this.reads++;
     if (status === 404) return null;
     if (status !== 200) throw Firestore.fail('get', status, body);
     return body;
@@ -102,6 +110,7 @@ export class Firestore {
       documents: paths.map((p) => `${this.root}/${p}`),
     });
     if (status !== 200 || !Array.isArray(body)) throw Firestore.fail('batchGet', status, body);
+    this.reads += paths.length;
     for (const r of body) {
       if (r.found) out.set(documentPath(r.found.name).join('/'), decodeFields(r.found.fields));
       else if (r.missing) out.set(documentPath(r.missing).join('/'), null);
@@ -113,6 +122,7 @@ export class Firestore {
   async list(path: string): Promise<RestDocument[]> {
     const { status, body } = await this.call<{ documents?: RestDocument[] }>('GET', `${this.root}/${path}?pageSize=300`);
     if (status !== 200) throw Firestore.fail('list', status, body);
+    this.reads += Math.max(1, body.documents?.length ?? 0);
     return body.documents ?? [];
   }
 
