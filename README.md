@@ -40,10 +40,14 @@ Every 5 minutes:
    their `source` (pwa-kit `ReminderSource`: a bill, a task, a dose), each record once. A reminder
    whose source says it is done (a bill paid or skipped, a task ticked, a dose marked, its record
    removed) is not sent but deleted, in step 5's `batchWrite`, so paying a bill from the portal's
-   To-do list or the connector stops its reminders without Bills being opened. A source may only
-   name the reminder's own app's collections (`SOURCE_COLLECTIONS` in `src/source.ts`, as the
-   kit's `REMINDER_SOURCE_COLLECTIONS`). Reminders without a source, with one this Worker doesn't
-   understand, or whose read fails (one log line) are sent as before.
+   To-do list or the connector stops its reminders without Bills being opened. The kit's
+   `@huishouden/pwa-kit/reminder-source` decides it, the same code the apps write sources with: a
+   source names only its app's own collections and the fields that say a record is done
+   (`REMINDER_SOURCES`), and counts only when its writer (`by`, which the rules make the signed-in
+   writer) is still a member whose role may read those records, for Health records one of the
+   person's `readers` (that person's document is read in the same `batchGet`). So a source never
+   tells anyone more than they could see in the app. Reminders without a source, with one that
+   doesn't count, or whose read fails (one log line) are sent as before.
 
    A reminder is taken only when all of its devices fit in what is left of the run's 45
    requests; the rest wait for the next run, and a household's later reminders wait behind an
@@ -78,7 +82,6 @@ that entry is sent; otherwise the reminder's own `title` and `body`.
 | `src/index.ts` | The Worker: the cron handler, and a one-line page for any HTTP request |
 | `src/heartbeat.ts` | One `NotifyRun` event per run to New Relic, for the "silent" and "failing" alerts |
 | `src/send.ts` | One run: query, fair order, recipients, claim, send, clean up |
-| `src/source.ts` | A reminder's `source`: which records it may name and whether they say it is still due |
 | `src/webpush.ts` | Web Push encryption and VAPID with WebCrypto only |
 | `src/google.ts` | Service account token |
 | `src/firestore.ts` | The Firestore REST calls (query, read, `batchGet`, `batchWrite`, delete) and value decoding |

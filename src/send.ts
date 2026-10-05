@@ -1,7 +1,7 @@
 import { accessToken, parseServiceAccount, type Fetch } from './google';
 import { decodeFields, documentPath, Firestore, type RestDocument, type WriteOutcome } from './firestore';
 import { loadVapid, pushRequest, type SubscriptionKeys, type Vapid } from './webpush';
-import { stillDue, toSource, type Source } from './source';
+import { readSource, sourceAllowed, sourceReads, stillDue, type ReminderSource, type SourceDocs } from '@huishouden/pwa-kit/reminder-source';
 
 export interface Env {
   FIREBASE_PROJECT_ID: string;
@@ -76,10 +76,12 @@ export interface Reminder {
    */
   texts: Partial<Record<Lang, { title: string; body: string }>>;
   /**
-   * The records it is about and when it is still due (pwa-kit `ReminderSource`, ./source): one no
-   * longer due is deleted instead of sent. Null without one, or with one this Worker won't use.
+   * The records it is about and when it is still due (pwa-kit `./reminder-source`): one no longer
+   * due is deleted instead of sent. Null without one, or with one past the kit's limits.
    */
-  source: Source | null;
+  source: ReminderSource | null;
+  /** Who wrote it (the rules make it the signed-in writer when it has a source); decides whether its source is used. */
+  by: string;
   doc: RestDocument;
 }
 
@@ -159,7 +161,7 @@ export function toReminder(doc: RestDocument, hosts: RegExp[] = []): Reminder | 
   if (personal && audience.length === 0) return null;
   const url = safeLink(d.url, hosts);
   const isPrivate = d.private !== false || MONEY_APPS.includes(d.app);
-  return { id: path[3], householdId: path[1], app: d.app, title: d.title, body: typeof d.body === 'string' ? d.body : '', at: d.at, url, recipients, private: isPrivate, personal, audience, texts: toTexts(d.texts), source: toSource(d.app, d.source), doc };
+  return { id: path[3], householdId: path[1], app: d.app, title: d.title, body: typeof d.body === 'string' ? d.body : '', at: d.at, url, recipients, private: isPrivate, personal, audience, texts: toTexts(d.texts), source: readSource(d.app, d.source), by: typeof d.by === 'string' ? d.by.toLowerCase() : '', doc };
 }
 
 export function toSubscription(doc: RestDocument): Subscription | null {
@@ -259,9 +261,23 @@ export function fairOrder(reminders: Reminder[], cap = PER_HOUSEHOLD_CAP): { ord
   return { order, capped };
 }
 
-/** Every distinct document the reminders' sources name, under their household. */
+/** Every distinct document the reminders' sources need read (pwa-kit `sourceReads`), under their household. */
 export function sourcePaths(reminders: Reminder[]): string[] {
-  return [...new Set(reminders.flatMap((r) => (r.source ? r.source.checks.map((c) => `households/${r.householdId}/${c.doc}`) : [])))];
+  return [...new Set(reminders.flatMap((r) => (r.source ? sourceReads(r.app, r.source).map((doc) => `households/${r.householdId}/${doc}`) : [])))];
+}
+
+/**
+ * Whether the reminder's source says it is done. Only a source its writer may use counts (pwa-kit
+ * `sourceAllowed`: a current member whose role may read those records, and for Health records one
+ * of the person's readers), so it never reveals anything the writer couldn't see; any other, or one
+ * whose records weren't read, leaves the reminder going out as before.
+ */
+export function sourceDone(reminder: Reminder, household: Pick<Household, 'members' | 'roles'>, read: SourceDocs): boolean {
+  if (!reminder.source) return false;
+  const members = household.members.map((m) => m.toLowerCase());
+  if (!reminder.by || !members.includes(reminder.by)) return false;
+  if (sourceAllowed(reminder.app, reminder.source, reminder.by, roleOf(reminder.by, members, household.roles), read) !== true) return false;
+  return stillDue(reminder.source, read) === false;
 }
 
 /**
@@ -269,9 +285,9 @@ export function sourcePaths(reminders: Reminder[]): string[] {
  * ("bills/b1"). A read that fails is logged and leaves the map empty: those reminders go out as
  * they did before sources existed.
  */
-async function loadSources(db: Firestore, householdId: string, paths: string[], log: (line: string) => void): Promise<Map<string, Record<string, unknown> | null>> {
+async function loadSources(db: Firestore, householdId: string, paths: string[], log: (line: string) => void): Promise<SourceDocs> {
   const prefix = `households/${householdId}/`;
-  const out = new Map<string, Record<string, unknown> | null>();
+  const out: SourceDocs = new Map();
   if (paths.length === 0) return out;
   try {
     for (const [path, fields] of await db.getAll(paths)) if (path.startsWith(prefix)) out.set(path.slice(prefix.length), fields);
@@ -353,7 +369,7 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
     // name), then every push of each chosen reminder, keeping one request for the batchWrite that
     // marks and claims them all and deletes those no longer due.
     const households = new Map<string, Household>();
-    const sources = new Map<string, Map<string, Record<string, unknown> | null>>();
+    const sources = new Map<string, SourceDocs>();
     const blocked = new Set<string>();
     const chosen: { reminder: Reminder; to: Subscription[] }[] = [];
     const finished: Reminder[] = [];
@@ -379,7 +395,7 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
         sources.set(reminder.householdId, read);
         spare -= reads;
       }
-      if (reminder.source && stillDue(reminder.source, sources.get(reminder.householdId) ?? new Map()) === false) {
+      if (sourceDone(reminder, household, sources.get(reminder.householdId) ?? new Map())) {
         finished.push(reminder);
         continue;
       }
@@ -401,20 +417,20 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
     }
     stats.deferred = left > 0 || capped > 0 || unread;
 
-    const outcomes = await db.markSent([...marks.map((m) => m.doc), ...chosen.map((c) => c.reminder.doc)], now, finished.map((r) => r.doc));
+    const outcomes = await db.commit({ mark: [...marks.map((m) => m.doc), ...chosen.map((c) => c.reminder.doc)], remove: finished.map((r) => r.doc) }, now);
     const errors: string[] = [];
     const count = (outcome: WriteOutcome, ok: () => void) => {
       if (outcome.ok) ok();
       else if (outcome.raced) stats.raced++;
       else errors.push(outcome.error);
     };
-    marks.forEach((m, i) => count(outcomes[i], () => stats[m.kind]++));
+    marks.forEach((m, i) => count(outcomes.marked[i], () => stats[m.kind]++));
     const claimed = chosen.filter((c, i) => {
       let ok = false;
-      count(outcomes[marks.length + i], () => (ok = true));
+      count(outcomes.marked[marks.length + i], () => (ok = true));
       return ok;
     });
-    finished.forEach((_, i) => count(outcomes[marks.length + chosen.length + i], () => stats.done++));
+    outcomes.removed.forEach((outcome) => count(outcome, () => stats.done++));
 
     stats.sent = claimed.length;
     const deliveries = claimed.flatMap(({ reminder, to }) => {
@@ -452,7 +468,7 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
       }),
     );
 
-    if (errors.length) throw new Error(`Firestore batchWrite: ${errors.length} of ${outcomes.length} writes failed (${errors[0]})`);
+    if (errors.length) throw new Error(`Firestore batchWrite: ${errors.length} of ${outcomes.marked.length + outcomes.removed.length} writes failed (${errors[0]})`);
   } catch (error) {
     if (!(error instanceof BudgetExhausted)) throw error;
     stats.deferred = true;
