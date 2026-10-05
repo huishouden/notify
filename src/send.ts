@@ -2,7 +2,7 @@ import { accessToken, parseServiceAccount, type Fetch } from './google';
 import { decodeFields, documentPath, Firestore, type RestDocument, type WriteOutcome } from './firestore';
 import { loadVapid, pushRequest, type SubscriptionKeys, type Vapid } from './webpush';
 import { redact } from './heartbeat';
-import { readSource, sourceAllowed, sourceReads, stillDue, type ReminderSource, type SourceDocs } from '@huishouden/pwa-kit/reminder-source';
+import { readSource, sourceAllowed, sourceCollection, sourceReads, stillDue, type ReminderSource, type SourceDocs } from '@huishouden/pwa-kit/reminder-source';
 
 export interface Env {
   FIREBASE_PROJECT_ID: string;
@@ -275,6 +275,8 @@ export function sourcePaths(reminders: Reminder[]): string[] {
  */
 export function sourceDone(reminder: Reminder, household: Pick<Household, 'members' | 'roles'>, read: SourceDocs): boolean {
   if (!reminder.source) return false;
+  // Records only some may read (Health's) count only on a personal reminder, which only its audience reads.
+  if (!reminder.personal && reminder.source.checks.some((c) => sourceCollection(reminder.app, c.doc)?.readers)) return false;
   const members = household.members.map((m) => m.toLowerCase());
   if (!reminder.by || !members.includes(reminder.by)) return false;
   if (sourceAllowed(reminder.app, reminder.source, reminder.by, roleOf(reminder.by, members, household.roles), read) !== true) return false;

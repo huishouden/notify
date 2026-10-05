@@ -19,6 +19,6 @@
     "wrangler": "^4.147.0"
   },
   "dependencies": {
-    "@huishouden/pwa-kit": "github:huishouden/pwa-kit#d154e1e5986aca8d123c1a7d497c7ca63af37b06"
+    "@huishouden/pwa-kit": "github:huishouden/pwa-kit#v0.96.0"
   }
 }
