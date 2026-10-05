@@ -1,6 +1,7 @@
 import { accessToken, parseServiceAccount, type Fetch } from './google';
 import { decodeFields, documentPath, Firestore, type RestDocument, type WriteOutcome } from './firestore';
 import { loadVapid, pushRequest, type SubscriptionKeys, type Vapid } from './webpush';
+import { redact } from './heartbeat';
 import { readSource, sourceAllowed, sourceReads, stillDue, type ReminderSource, type SourceDocs } from '@huishouden/pwa-kit/reminder-source';
 
 export interface Env {
@@ -293,7 +294,7 @@ async function loadSources(db: Firestore, householdId: string, paths: string[], 
     for (const [path, fields] of await db.getAll(paths)) if (path.startsWith(prefix)) out.set(path.slice(prefix.length), fields);
   } catch (error) {
     if (error instanceof BudgetExhausted) throw error;
-    log(`source read failed, sending without it: ${error instanceof Error ? error.message.slice(0, 200) : String(error)}`);
+    log(`source read failed, sending without it: ${error instanceof Error ? redact(error.message) : String(error)}`);
   }
   return out;
 }
@@ -336,13 +337,13 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
       db.dueReminders(now, BATCH, 'ASCENDING'),
       db.dueReminders(now, BATCH, 'DESCENDING').catch((error: unknown) => {
         if (error instanceof BudgetExhausted) throw error;
-        log(`newest-first query failed, using the oldest-first window only: ${error instanceof Error ? error.message.slice(0, 200) : String(error)}`);
+        log(`newest-first query failed, using the oldest-first window only: ${error instanceof Error ? redact(error.message) : String(error)}`);
         return null;
       }),
       // Reminders for named members only; while its index is missing or building, the run goes on without them.
       db.dueReminders(now, BATCH, 'ASCENDING', 'personalReminders').catch((error: unknown) => {
         if (error instanceof BudgetExhausted) throw error;
-        log(`personal reminders query failed, sending shared reminders only: ${error instanceof Error ? error.message.slice(0, 200) : String(error)}`);
+        log(`personal reminders query failed, sending shared reminders only: ${error instanceof Error ? redact(error.message) : String(error)}`);
         return [] as RestDocument[];
       }),
     ]);
