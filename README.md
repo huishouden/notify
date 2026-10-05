@@ -80,6 +80,7 @@ that entry is sent; otherwise the reminder's own `title` and `body`.
 | File | Does |
 |---|---|
 | `src/index.ts` | The Worker: the cron handler, and a one-line page for any HTTP request |
+| `src/redact.ts` | Error messages without addresses or document paths, for logs and the heartbeat |
 | `src/heartbeat.ts` | One `NotifyRun` event per run to New Relic, for the "silent" and "failing" alerts |
 | `src/send.ts` | One run: query, fair order, recipients, claim, send, clean up |
 | `src/webpush.ts` | Web Push encryption and VAPID with WebCrypto only |

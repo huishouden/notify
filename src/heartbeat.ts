@@ -1,4 +1,7 @@
 import type { RunStats } from './send';
+import { redact } from './redact';
+
+export { redact };
 
 /**
  * One `NotifyRun` event per run to New Relic's Event API, so alerts fire when runs stop (no event
@@ -21,14 +24,6 @@ export const HEARTBEAT_SUBREQUESTS = 1;
 /** Counts sent with each run. A new `RunStats` field is not sent until it is listed here. */
 const COUNTS = ['due', 'sent', 'pushed', 'failed', 'removed', 'late', 'invalid', 'raced', 'noDevices', 'capped', 'done', 'deferred'] as const satisfies readonly (keyof RunStats)[];
 
-/** An error message without addresses or Firestore document paths (which name households). */
-export function redact(message: string): string {
-  return message
-    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[email]')
-    .replace(/projects\/[^\s"']*\/documents\/[^\s"']*/g, '[document]')
-    .replace(/households\/[^/\s"']+/g, 'households/[id]')
-    .slice(0, 300);
-}
 
 export function heartbeatEvent(stats: RunStats | null, error: unknown, durationMs: number, scheduledTime: number): Record<string, string | number | boolean> {
   const event: Record<string, string | number | boolean> = { eventType: 'NotifyRun', durationMs, scheduledTime };
