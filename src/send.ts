@@ -1,7 +1,7 @@
 import { accessToken, parseServiceAccount, type Fetch } from './google';
 import { decodeFields, documentPath, Firestore, type RestDocument, type WriteOutcome } from './firestore';
 import { loadVapid, pushRequest, type SubscriptionKeys, type Vapid } from './webpush';
-import { redact } from './heartbeat';
+import { redact } from './redact';
 import { readSource, sourceAllowed, sourceCollection, sourceReads, stillDue, type ReminderSource, type SourceDocs } from '@huishouden/pwa-kit/reminder-source';
 
 export interface Env {
