@@ -1,0 +1,65 @@
+{
+  "_note": "A documents:batchGet response (a JSON array, one entry per document asked for): Rent paid from the portal, Water still due, Phone removed.",
+  "responses": [
+    {
+      "found": {
+        "name": "projects/demo-huishouden/databases/(default)/documents/households/h1/bills/rent",
+        "fields": {
+          "label": {
+            "stringValue": "Rent"
+          },
+          "status": {
+            "stringValue": "paid"
+          },
+          "due": {
+            "stringValue": "2026-01-01"
+          },
+          "paidAt": {
+            "integerValue": "1767265200000"
+          },
+          "paidBy": {
+            "stringValue": "sam@example.com"
+          },
+          "paidVia": {
+            "stringValue": "member"
+          }
+        },
+        "createTime": "2026-01-01T00:00:00.000000Z",
+        "updateTime": "2026-01-01T11:00:00.000000Z"
+      },
+      "readTime": "2026-01-01T12:00:00.000000Z"
+    },
+    {
+      "found": {
+        "name": "projects/demo-huishouden/databases/(default)/documents/households/h1/bills/water",
+        "fields": {
+          "label": {
+            "stringValue": "Water"
+          },
+          "status": {
+            "stringValue": "due"
+          },
+          "due": {
+            "stringValue": "2026-01-01"
+          },
+          "autopay": {
+            "mapValue": {
+              "fields": {
+                "enrolled": {
+                  "booleanValue": false
+                }
+              }
+            }
+          }
+        },
+        "createTime": "2026-01-01T00:00:00.000000Z",
+        "updateTime": "2026-01-01T11:00:00.000000Z"
+      },
+      "readTime": "2026-01-01T12:00:00.000000Z"
+    },
+    {
+      "missing": "projects/demo-huishouden/databases/(default)/documents/households/h1/bills/phone",
+      "readTime": "2026-01-01T12:00:00.000000Z"
+    }
+  ]
+}

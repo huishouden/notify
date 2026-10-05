@@ -90,6 +90,25 @@ export class Firestore {
     return body;
   }
 
+  /**
+   * Several documents in one request (`batchGet`), by path under the database root. Each path maps
+   * to its fields decoded, or null when the document doesn't exist; a path missing from the answer
+   * is left out.
+   */
+  async getAll(paths: string[]): Promise<Map<string, Record<string, unknown> | null>> {
+    const out = new Map<string, Record<string, unknown> | null>();
+    if (paths.length === 0) return out;
+    const { status, body } = await this.call<{ found?: RestDocument; missing?: string }[]>('POST', `${this.root}:batchGet`, {
+      documents: paths.map((p) => `${this.root}/${p}`),
+    });
+    if (status !== 200 || !Array.isArray(body)) throw Firestore.fail('batchGet', status, body);
+    for (const r of body) {
+      if (r.found) out.set(documentPath(r.found.name).join('/'), decodeFields(r.found.fields));
+      else if (r.missing) out.set(documentPath(r.missing).join('/'), null);
+    }
+    return out;
+  }
+
   /** Every document in a (small) collection: one page of up to 300. */
   async list(path: string): Promise<RestDocument[]> {
     const { status, body } = await this.call<{ documents?: RestDocument[] }>('GET', `${this.root}/${path}?pageSize=300`);
@@ -98,20 +117,24 @@ export class Firestore {
   }
 
   /**
-   * Marks documents sent in one non-atomic `batchWrite`, each only if unchanged since it was read
-   * (`updateTime` precondition), and says per document whether it was marked. `raced` means someone
-   * else got there first: another run, or a member editing, rescheduling or deleting it.
+   * Marks documents sent, and deletes `remove`, in one non-atomic `batchWrite`, each only if
+   * unchanged since it was read (`updateTime` precondition), and says per document (the marked
+   * ones, then the deleted ones) whether it was written. `raced` means someone else got there
+   * first: another run, or a member editing, rescheduling or deleting it.
    */
-  async markSent(docs: RestDocument[], sentAt: number): Promise<WriteOutcome[]> {
-    if (docs.length === 0) return [];
-    const writes = docs.map((doc) => ({
-      update: { name: doc.name, fields: { sent: { booleanValue: true }, sentAt: { integerValue: String(sentAt) } } },
-      updateMask: { fieldPaths: ['sent', 'sentAt'] },
-      currentDocument: { updateTime: doc.updateTime },
-    }));
+  async markSent(docs: RestDocument[], sentAt: number, remove: RestDocument[] = []): Promise<WriteOutcome[]> {
+    if (docs.length === 0 && remove.length === 0) return [];
+    const writes = [
+      ...docs.map((doc) => ({
+        update: { name: doc.name, fields: { sent: { booleanValue: true }, sentAt: { integerValue: String(sentAt) } } },
+        updateMask: { fieldPaths: ['sent', 'sentAt'] },
+        currentDocument: { updateTime: doc.updateTime },
+      })),
+      ...remove.map((doc) => ({ delete: doc.name, currentDocument: { updateTime: doc.updateTime } })),
+    ];
     const { status, body } = await this.call<{ status?: { code?: number; message?: string }[] }>('POST', `${this.root}:batchWrite`, { writes });
     if (status !== 200) throw Firestore.fail('batchWrite', status, body);
-    return docs.map((_, i) => {
+    return writes.map((_, i) => {
       const code = body.status?.[i]?.code ?? 0;
       if (code === 0) return { ok: true };
       if (RACED_CODES.includes(code)) return { ok: false, raced: true };

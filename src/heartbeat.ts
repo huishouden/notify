@@ -19,7 +19,7 @@ export interface HeartbeatEnv {
 export const HEARTBEAT_SUBREQUESTS = 1;
 
 /** Counts sent with each run. A new `RunStats` field is not sent until it is listed here. */
-const COUNTS = ['due', 'sent', 'pushed', 'failed', 'removed', 'late', 'invalid', 'raced', 'noDevices', 'capped', 'deferred'] as const satisfies readonly (keyof RunStats)[];
+const COUNTS = ['due', 'sent', 'pushed', 'failed', 'removed', 'late', 'invalid', 'raced', 'noDevices', 'capped', 'done', 'deferred'] as const satisfies readonly (keyof RunStats)[];
 
 /** An error message without addresses or Firestore document paths (which name households). */
 export function redact(message: string): string {

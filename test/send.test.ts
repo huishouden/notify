@@ -11,6 +11,8 @@ import batchWrite from './fixtures/batch-write-response.json';
 import indexMissing from './fixtures/index-missing.json';
 import personalDue from './fixtures/personal-reminders.json';
 import v from './fixtures/rfc8291.json';
+import sourceDue from './fixtures/source-reminders.json';
+import batchGetBills from './fixtures/batch-get-bills.json';
 import { json, stubFetch, testEnv, type Call, type Route } from './helpers';
 
 const NOW = 1_767_268_800_000;
@@ -24,8 +26,11 @@ type Outcome = 'ok' | 'precondition' | 'notFound' | 'aborted' | 'internal';
 const OUTCOME = { ok: 0, precondition: 1, notFound: 2, aborted: 3, internal: 4 } as const;
 
 /** A batchWrite response giving each write the outcome `outcome` picks for its document. */
-function batchWriteResponse(writes: { update: { name: string } }[], outcome: (name: string) => Outcome | undefined) {
-  const picks = writes.map((w) => OUTCOME[outcome(w.update.name) ?? 'ok']);
+type Write = { update?: { name: string }; delete?: string };
+const writeName = (w: Write) => w.update?.name ?? w.delete ?? '';
+
+function batchWriteResponse(writes: Write[], outcome: (name: string) => Outcome | undefined) {
+  const picks = writes.map((w) => OUTCOME[outcome(writeName(w)) ?? 'ok']);
   return { writeResults: picks.map((i) => batchWrite.writeResults[i]), status: picks.map((i) => batchWrite.status[i]) };
 }
 
@@ -36,7 +41,7 @@ const directionOf = (c: Call) => (c.body as { structuredQuery: { orderBy: { dire
  * Firestore, push services and Google's token endpoint. `due` is everything due, oldest first; each
  * query answers with its 50-reminder window of it. Households other than h1 have one member device.
  */
-function routes(over: { prefs?: (household: string) => unknown; personal?: (c: Call) => Response | undefined; due?: Entry[]; newest?: (c: Call) => Response | undefined; write?: (name: string) => Outcome | undefined; batchWrite?: Route; subs?: (household: string) => unknown; push?: Route } = {}): Route[] {
+function routes(over: { batchGet?: Route; prefs?: (household: string) => unknown; personal?: (c: Call) => Response | undefined; due?: Entry[]; newest?: (c: Call) => Response | undefined; write?: (name: string) => Outcome | undefined; batchWrite?: Route; subs?: (household: string) => unknown; push?: Route } = {}): Route[] {
   const docs = (over.due ?? due).filter((e) => e.document);
   return [
     (c) => (c.url === 'https://oauth2.googleapis.com/token' ? json(tokenResponse) : undefined),
@@ -46,7 +51,8 @@ function routes(over: { prefs?: (household: string) => unknown; personal?: (c: C
       if (directionOf(c) === 'ASCENDING') return json([...docs.slice(0, 50), { readTime: '2026-01-01T12:00:00.000000Z' }]);
       return over.newest?.(c) ?? json([...docs.slice(-50).reverse(), { readTime: '2026-01-01T12:00:00.000000Z' }]);
     },
-    (c) => (c.url === `${DOCS}:batchWrite` ? (over.batchWrite?.(c) ?? json(batchWriteResponse((c.body as { writes: { update: { name: string } }[] }).writes, over.write ?? (() => 'ok')))) : undefined),
+    (c) => (c.url === `${DOCS}:batchWrite` ? (over.batchWrite?.(c) ?? json(batchWriteResponse((c.body as { writes: Write[] }).writes, over.write ?? (() => 'ok')))) : undefined),
+    (c) => (c.url === `${DOCS}:batchGet` ? (over.batchGet?.(c) ?? json(batchGetAnswer(c))) : undefined),
     (c) => {
       const m = c.method === 'GET' && c.url.match(/\/households\/([^/?]+)(\/pushSubscriptions\?pageSize=300)?$/);
       if (!m) return undefined;
@@ -61,6 +67,15 @@ function routes(over: { prefs?: (household: string) => unknown; personal?: (c: C
     (c) => (c.method === 'DELETE' ? json({}) : undefined),
     (c) => (isPush(c) ? (over.push?.(c) ?? new Response(null, { status: c.url.includes('gone.example.org') ? 410 : 201 })) : undefined),
   ];
+}
+
+/** The fixture's documents that a batchGet asked for, in the order asked; any other is missing. */
+function batchGetAnswer(c: Call) {
+  const asked = (c.body as { documents: string[] }).documents;
+  return asked.map(
+    (name) =>
+      batchGetBills.responses.find((r) => (r.found?.name ?? r.missing) === name) ?? { missing: name, readTime: '2026-01-01T12:00:00.000000Z' },
+  );
 }
 
 /** A household's subscriptions: Sam's tablet only, at an endpoint of its own. */
@@ -97,7 +112,10 @@ const backlog = (householdId: string, count: number, newest: number) =>
 
 const byAt = (entries: Entry[]) => entries.filter((e) => e.document).sort((a, b) => Number((a.document!.fields!.at as { integerValue: string }).integerValue) - Number((b.document!.fields!.at as { integerValue: string }).integerValue));
 
-const writesOf = (calls: Call[]) => calls.filter((c) => c.url === `${DOCS}:batchWrite`).map((c) => (c.body as { writes: { update: { name: string; fields: unknown }; updateMask: unknown; currentDocument: unknown }[] }).writes);
+const writesOf = (calls: Call[]) =>
+  calls.filter((c) => c.url === `${DOCS}:batchWrite`).map((c) => (c.body as { writes: { update: { name: string; fields: unknown }; updateMask: unknown; currentDocument: unknown }[] }).writes);
+const deletesOf = (calls: Call[]) =>
+  calls.filter((c) => c.url === `${DOCS}:batchWrite`).flatMap((c) => (c.body as { writes: { delete?: string; currentDocument: unknown }[] }).writes.filter((w) => w.delete));
 const shortName = (name: string) => name.split('/documents/')[1];
 
 async function decryptPush(body: Bytes): Promise<Record<string, unknown>> {
@@ -310,7 +328,7 @@ describe('run', () => {
     const { fetchImpl, calls } = stubFetch(routes());
     const stats = await run(await testEnv(), NOW, fetchImpl, quiet);
     // Both reminders reach the dropped laptop; it is deleted once.
-    expect(stats).toEqual({ due: 3, sent: 2, pushed: 3, failed: 2, removed: 1, late: 1, invalid: 0, raced: 0, noDevices: 0, capped: 0, deferred: false });
+    expect(stats).toEqual({ due: 3, sent: 2, pushed: 3, failed: 2, removed: 1, late: 1, invalid: 0, raced: 0, noDevices: 0, capped: 0, done: 0, deferred: false });
 
     const queries = calls.filter((c) => c.url.endsWith(':runQuery'));
     expect(queries.map((q) => `${collectionOf(q)} ${directionOf(q)}`)).toEqual(['reminders ASCENDING', 'reminders DESCENDING', 'personalReminders ASCENDING']);
@@ -538,5 +556,89 @@ describe('run', () => {
     const env = await testEnv();
     await expect(run({ ...env, VAPID_PRIVATE_KEY: '' }, NOW, stubFetch([]).fetchImpl)).rejects.toThrow(/VAPID_PRIVATE_KEY/);
     await expect(run({ ...env, GOOGLE_SERVICE_ACCOUNT: '' }, NOW, stubFetch([]).fetchImpl)).rejects.toThrow(/GOOGLE_SERVICE_ACCOUNT/);
+  });
+});
+
+describe('reminders with a source', () => {
+  // Rent was paid from the portal's To-do list, Water is still due, Phone's bill was removed; a
+  // second Rent reminder names the same bill.
+  const entries = sourceDue as Entry[];
+  const asked = (calls: Call[]) => calls.filter((c) => c.url === `${DOCS}:batchGet`).map((c) => (c.body as { documents: string[] }).documents.map(shortName));
+
+  test('a paid bill is deleted unsent, an unpaid one sent, a removed one deleted: one read for the household', async () => {
+    const { fetchImpl, calls } = stubFetch(routes({ due: entries }));
+    const stats = await run(await testEnv(), NOW, fetchImpl, quiet);
+    expect(stats).toMatchObject({ due: 4, sent: 1, done: 3, raced: 0 });
+    // One batchGet, each bill once.
+    expect(asked(calls)).toEqual([['households/h1/bills/rent', 'households/h1/bills/water', 'households/h1/bills/phone']]);
+    const [writes] = writesOf(calls);
+    expect(writes.filter((w) => w.update).map((w) => shortName(w.update.name))).toEqual(['households/h1/reminders/bills-water-due']);
+    // Deleted in the same batchWrite, each only if unchanged since it was read.
+    expect(deletesOf(calls).map((w) => [shortName(w.delete!), w.currentDocument])).toEqual([
+      ['households/h1/reminders/bills-rent-due', { updateTime: '2026-01-01T00:00:03.000003Z' }],
+      ['households/h1/reminders/bills-phone-due', { updateTime: '2026-01-01T00:00:05.000005Z' }],
+      ['households/h1/reminders/bills-rent-again', { updateTime: '2026-01-01T00:00:06.000006Z' }],
+    ]);
+    expect(calls.filter((c) => c.method === 'DELETE' && c.url.includes('/reminders/'))).toHaveLength(0);
+    const pushed = await Promise.all(calls.filter(isPush).filter((c) => c.url.includes('push.example.net')).map((c) => decryptPush(c.body as Bytes).catch(() => null)));
+    expect(pushed.filter(Boolean).map((p) => p!.title)).not.toContain('Rent due today');
+  });
+
+  test('a reminder edited since it was read is not deleted: raced', async () => {
+    const { fetchImpl } = stubFetch(routes({ due: entries, write: (name) => (name.endsWith('/bills-rent-due') ? 'precondition' : undefined) }));
+    expect(await run(await testEnv(), NOW, fetchImpl, quiet)).toMatchObject({ sent: 1, done: 2, raced: 1 });
+  });
+
+  test('a source read that fails sends the reminders as before, with one log line', async () => {
+    const lines: string[] = [];
+    const { fetchImpl } = stubFetch(routes({ due: entries, batchGet: () => json({ error: { status: 'PERMISSION_DENIED', message: 'no' } }, 403) }));
+    const stats = await run(await testEnv(), NOW, fetchImpl, (l) => lines.push(l));
+    expect(stats).toMatchObject({ sent: 4, done: 0 });
+    expect(lines).toEqual(['source read failed, sending without it: [403] Firestore batchGet: PERMISSION_DENIED no']);
+  });
+
+  test('without sources nothing extra is read', async () => {
+    const { calls } = await (async () => {
+      const s = stubFetch(routes());
+      await run(await testEnv(), NOW, s.fetchImpl, quiet);
+      return s;
+    })();
+    expect(asked(calls)).toEqual([]);
+  });
+
+  test("a source naming another app's records is ignored: the reminder is sent and nothing is read", async () => {
+    const odd = structuredClone(entries[0]);
+    const check = (odd.document!.fields!.source as { mapValue: { fields: { checks: { arrayValue: { values: { mapValue: { fields: { doc: { stringValue: string } } } }[] } } } } }).mapValue.fields.checks.arrayValue.values[0];
+    check.mapValue.fields.doc.stringValue = 'spendingTransactions/t1';
+    const { fetchImpl, calls } = stubFetch(routes({ due: [odd] }));
+    expect(await run(await testEnv(), NOW, fetchImpl, quiet)).toMatchObject({ sent: 1, done: 0 });
+    expect(asked(calls)).toEqual([]);
+  });
+
+  test('a household with sources costs one more request, and still fits the budget', async () => {
+    const plain = stubFetch(routes({ due: [due[0]] }));
+    await run(await testEnv(), NOW, plain.fetchImpl, quiet);
+    resetTokenCache();
+    const one = stubFetch(routes({ due: [entries[1]] }));
+    const stats = await run(await testEnv(), NOW, one.fetchImpl, quiet);
+    expect(stats).toMatchObject({ sent: 1, done: 0 });
+    const firestore = (calls: Call[]) => calls.filter((c) => c.url.startsWith('https://firestore.googleapis.com')).length;
+    expect(firestore(one.calls)).toBe(firestore(plain.calls) + 1);
+
+    // Many households, each with a sourced reminder: every run stays within the budget.
+    resetTokenCache();
+    const many = Array.from({ length: 30 }, (_, h) => {
+      const e = structuredClone(entries[1]);
+      e.document!.name = e.document!.name.replace('/h1/', `/h${h + 10}/`);
+      return e;
+    });
+    // Each household's Water bill is still due.
+    const water = batchGetBills.responses[1].found!;
+    const unpaid: Route = (c) => json((c.body as { documents: string[] }).documents.map((name) => ({ found: { ...water, name }, readTime: '2026-01-01T12:00:00.000000Z' })));
+    const crowd = stubFetch(routes({ due: many, batchGet: unpaid }));
+    const crowdStats = await run(await testEnv(), NOW, crowd.fetchImpl, quiet);
+    expect(crowd.calls.length).toBeLessThanOrEqual(SUBREQUEST_BUDGET);
+    expect(crowdStats).toMatchObject({ deferred: true, done: 0 });
+    expect(crowdStats.sent).toBeGreaterThan(0);
   });
 });
