@@ -2,7 +2,7 @@
   "name": "huishouden-notify",
   "private": true,
   "license": "PolyForm-Shield-1.0.0",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "type": "module",
   "scripts": {
     "lint": "tsc --noEmit && tsc --noEmit -p test",
@@ -19,6 +19,6 @@
     "wrangler": "^4.147.0"
   },
   "dependencies": {
-    "@huishouden/pwa-kit": "github:huishouden/pwa-kit#v0.98.2"
+    "@huishouden/pwa-kit": "github:huishouden/pwa-kit#v0.105.0"
   }
 }
