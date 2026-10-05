@@ -215,7 +215,7 @@ Cloudflare's own Workers Observability (`[observability]` in `wrangler.toml`) ke
 
 CI deploys on every push to `main` once these secrets of the `production` environment exist
 (its deployment branches are `main` alone, so no other branch's run can read them); until then
-the deploy job runs but deploys nothing, with a notice. Repository secrets of the same names also reach the job; once the environment holds the values, delete them (`gh secret delete CLOUDFLARE_API_TOKEN -R huishouden/notify`, and the account id). The environment itself (Settings > Environments > `production`, deployment branches: `main`) exists already.
+the deploy job runs but deploys nothing, with a notice. Repository secrets of the same names also reach the job; once the environment holds the values, delete them (`gh secret delete CLOUDFLARE_API_TOKEN -R huishouden/notify`, and `gh secret delete CLOUDFLARE_ACCOUNT_ID -R huishouden/notify`). The environment itself (Settings > Environments > `production`, deployment branches: `main`) exists already.
 
 1. Cloudflare dashboard > My Profile > API Tokens > Create Token > "Edit Cloudflare Workers"
    template, limited to your account. Copy the token.
