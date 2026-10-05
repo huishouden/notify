@@ -625,9 +625,11 @@ describe('reminders with a source', () => {
     expect(sourceDone({ ...rent, by: 'mallory@example.com' }, home, paid)).toBe(false);
     expect(sourceDone({ ...rent, by: '' }, home, paid)).toBe(false);
     // Health: only one of the person's readers.
-    const dose = { ...rent, app: 'health', source: { checks: [{ doc: 'healthPeople/p1/doses/m1_0800', absent: true as const }] } };
+    const dose = { ...rent, app: 'health', personal: true, source: { checks: [{ doc: 'healthPeople/p1/doses/m1_0800', absent: true as const }] } };
     const given = (readers: string[]) => new Map<string, Record<string, unknown> | null>([['healthPeople/p1/doses/m1_0800', { status: 'given' }], ['healthPeople/p1', { readers }]]);
     expect(sourceDone({ ...dose, by: 'sam@example.com' }, home, given(['sam@example.com']))).toBe(true);
+    // On a shared reminder, which every member reads, a Health source doesn't count.
+    expect(sourceDone({ ...dose, personal: false, by: 'sam@example.com' }, home, given(['sam@example.com']))).toBe(false);
     expect(sourceDone({ ...dose, by: 'sam@example.com' }, home, given(['alex@example.com']))).toBe(false);
   });
 
