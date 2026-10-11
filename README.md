@@ -125,6 +125,7 @@ that entry is sent; otherwise the reminder's own `title` and `body`.
   Push. `pushSupport()` in the kit says which case a device is in, so the app can explain.
 - **Delivery isn't guaranteed.** Push services hold a message for up to 4 hours (`TTL`) while a
   device is offline, then drop it. Phones in battery saver may delay it.
+- **One subscription per device.** A subscription stored with `app: "suite"` (made through the portal's service worker) serves every app's reminders, unless it carries an `apps` list (set when an older per-app subscription moved to it), in which case it serves only those; a tap opens the reminder's own app path. Older per-app subscriptions keep receiving their own app's reminders until the device upgrades, when the apps delete them, so a device never gets a reminder twice.
 - **One VAPID key for all apps and households.** Subscriptions are tied to it; replacing it means
   every device turns notifications on again.
 

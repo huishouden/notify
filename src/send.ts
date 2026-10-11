@@ -122,6 +122,17 @@ export function toTexts(value: unknown): Partial<Record<Lang, { title: string; b
   return out;
 }
 
+/** The `app` of a subscription that covers every app. Copied from pwa-kit `SUITE_PUSH_APP` (its `./push` entry loads Firebase, which this Worker doesn't), like `LANGS` and `MONEY_APPS`; the kit's push tests pin the value. */
+export const SUITE_APP = 'suite';
+
+/**
+ * Whether a subscription is for this app: its own app's, or a suite subscription (made through the
+ * portal's worker) for every app, or for the `apps` it was limited to when a per-app subscription moved to it.
+ */
+export function covers(s: Subscription, app: string): boolean {
+  return s.app === SUITE_APP ? !s.apps || s.apps.includes(app) : s.app === app;
+}
+
 /** Apps whose reminders are money, never sent to helpers or kids (pwa-kit `MONEY_APPS`). */
 const MONEY_APPS = ['spending', 'bills'];
 
@@ -133,6 +144,8 @@ export interface Subscription {
   keys: SubscriptionKeys;
   /** The device's language (pwa-kit `./push`), absent on subscriptions saved before it existed. */
   lang?: Lang;
+  /** A suite subscription limited to these apps (pwa-kit `./push` `apps`); absent: every app. */
+  apps?: string[];
 }
 
 export interface RunStats {
@@ -187,9 +200,10 @@ export function toReminder(doc: RestDocument, hosts: RegExp[] = []): Reminder | 
 }
 
 export function toSubscription(doc: RestDocument): Subscription | null {
-  const d = decodeFields(doc.fields) as { email?: unknown; app?: unknown; endpoint?: unknown; keys?: { p256dh?: unknown; auth?: unknown }; lang?: unknown };
+  const d = decodeFields(doc.fields) as { email?: unknown; app?: unknown; endpoint?: unknown; keys?: { p256dh?: unknown; auth?: unknown }; lang?: unknown; apps?: unknown };
   if (typeof d.email !== 'string' || typeof d.endpoint !== 'string' || !/^https:\/\//.test(d.endpoint)) return null;
   if (typeof d.keys?.p256dh !== 'string' || typeof d.keys?.auth !== 'string') return null;
+  const apps = Array.isArray(d.apps) ? d.apps.filter((a): a is string => typeof a === 'string') : [];
   return {
     name: doc.name,
     email: d.email.toLowerCase(),
@@ -197,6 +211,7 @@ export function toSubscription(doc: RestDocument): Subscription | null {
     endpoint: d.endpoint,
     keys: { p256dh: d.keys.p256dh, auth: d.keys.auth },
     ...(isLang(d.lang) ? { lang: d.lang } : {}),
+    ...(apps.length ? { apps } : {}),
   };
 }
 
@@ -212,7 +227,8 @@ export function roleOf(email: string, members: string[], roles: Record<string, u
 
 /**
  * Where one reminder goes: each recipient who is still a member, on the devices where they turned
- * notifications on in the reminder's own app, or on all their devices when they did so only in
+ * notifications on suite-wide or in the reminder's own app (older per-app subscriptions, until the
+ * device upgrades and the app removes them), or on all their devices when they did so only in
  * other apps. A device shared by two recipients (the household tablet) gets it once. A private
  * reminder goes only to admins and members: helpers and kids can't read it in the app either.
  * Nobody gets one from an app they muted for themselves (`notificationPrefs/{email}`, `muted`).
@@ -234,7 +250,7 @@ export function targets(
   const chosen = new Map<string, Subscription>();
   for (const email of people) {
     const theirs = subscriptions.filter((s) => s.email === email);
-    const inApp = theirs.filter((s) => s.app === reminder.app);
+    const inApp = theirs.filter((s) => covers(s, reminder.app));
     for (const s of inApp.length ? inApp : theirs) if (!chosen.has(s.endpoint)) chosen.set(s.endpoint, s);
   }
   return [...chosen.values()];

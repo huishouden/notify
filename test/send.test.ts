@@ -156,6 +156,23 @@ describe('targets', () => {
     ]);
   });
 
+  test('a suite subscription serves every app; a device with one never also gets the older per-app copy', () => {
+    const sub = (name: string, email: string, app: string, endpoint: string) => ({ name, email, app, endpoint, keys: { p256dh: 'p', auth: 'a' } });
+    const mine = [sub('a', 'sam@example.com', 'suite', 'https://push.example.net/phone'), sub('b', 'sam@example.com', 'pet', 'https://push.example.net/old-tablet')];
+    const reminder = (app: string) => ({ ...reminders[0], app, recipients: ['sam@example.com'] });
+    expect(targets(reminder('car'), members, mine).map((s) => s.endpoint)).toEqual(['https://push.example.net/phone']);
+    expect(targets(reminder('pet'), members, mine).map((s) => s.endpoint)).toEqual(['https://push.example.net/phone', 'https://push.example.net/old-tablet']);
+    // Only a suite subscription and no per-app one: no other app's reminder is lost.
+    expect(targets(reminder('home'), members, mine.slice(0, 1))).toHaveLength(1);
+    // A suite subscription limited to some apps (a moved per-app one) behaves like a per-app one for the rest.
+    const scoped = [{ ...sub('d', 'sam@example.com', 'suite', 'https://push.example.net/tablet'), apps: ['pet'] }, sub('e', 'sam@example.com', 'suite', 'https://push.example.net/phone')];
+    expect(targets(reminder('pet'), members, scoped).map((s) => s.endpoint)).toEqual(['https://push.example.net/tablet', 'https://push.example.net/phone']);
+    expect(targets(reminder('bills'), members, scoped).map((s) => s.endpoint)).toEqual(['https://push.example.net/phone']);
+    // The same endpoint under two documents is still one push.
+    const twice = [...mine.slice(0, 1), sub('c', 'sam@example.com', 'pet', 'https://push.example.net/phone')];
+    expect(targets(reminder('pet'), members, twice)).toHaveLength(1);
+  });
+
   test('a list reaches only those listed who are still members, whatever the case of their email', () => {
     expect(reminders[1].recipients).toEqual(['sam@example.com', 'mallory@example.com']);
     expect(targets(reminders[1], members, subs).map((s) => s.name.split('/').pop())).toEqual(['sam-tasks-tablet', 'sam-tasks-old']);
@@ -277,6 +294,15 @@ describe('each device in its own language', () => {
     expect(toSubscription(sub)!.lang).toBeUndefined();
     expect(toSubscription({ ...sub, fields: { ...sub.fields, lang: str('nl') } } as typeof sub)!.lang).toBe('nl');
     expect(toSubscription({ ...sub, fields: { ...sub.fields, lang: str('fr') } } as typeof sub)!.lang).toBeUndefined();
+  });
+
+  test("a suite subscription's apps: absent means every app, strings only, none left means every app", () => {
+    const sub = subscriptions.documents[0] as unknown as Parameters<typeof toSubscription>[0];
+    const list = (...items: unknown[]) => ({ arrayValue: { values: items.map((i) => (typeof i === 'string' ? str(i) : { integerValue: String(i) })) } });
+    const withApps = (apps: unknown) => toSubscription({ ...sub, fields: { ...sub.fields, apps } } as typeof sub)!;
+    expect(toSubscription(sub)!.apps).toBeUndefined();
+    expect(withApps(list('pet', 'home')).apps).toEqual(['pet', 'home']);
+    expect(withApps(list(3)).apps).toBeUndefined();
   });
 
   test('a run sends each device its own language', async () => {
