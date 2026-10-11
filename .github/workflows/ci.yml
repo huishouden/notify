@@ -41,7 +41,7 @@ jobs:
   # Tags the next version from the Conventional Commit titles and creates the release (pwa-kit STANDARD.md "Versions"); nothing is committed.
   release:
     needs: [leak-scan, build]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
     uses: huishouden/pwa-kit/.github/workflows/tag-release.yml@v0.108.0
     permissions:
       contents: write
