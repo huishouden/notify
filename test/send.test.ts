@@ -719,6 +719,16 @@ describe('reminders with a source', () => {
     expect(sourceDone({ ...dose, by: 'sam@example.com' }, home, given(['alex@example.com']))).toBe(false);
   });
 
+  test("a kick-count reminder is done once that day's session exists, and only a member or admin's counts", () => {
+    const rent = toReminder(entries[0].document as never)!;
+    const kicks = { ...rent, app: 'baby', ref: 'kicks:2031-05-14', source: { checks: [{ doc: 'babyKickSessions/2031-05-14', absent: true as const }] } };
+    const home = { members: ['alex@example.com', 'sam@example.com'], roles: { 'sam@example.com': 'helper' } };
+    const sessions = (started: boolean) => new Map<string, Record<string, unknown> | null>([['babyKickSessions/2031-05-14', started ? { start: 1 } : null]]);
+    expect(sourceDone({ ...kicks, by: 'alex@example.com' }, home, sessions(true))).toBe(true);
+    expect(sourceDone({ ...kicks, by: 'alex@example.com' }, home, sessions(false))).toBe(false);
+    expect(sourceDone({ ...kicks, by: 'sam@example.com' }, home, sessions(true))).toBe(false);
+  });
+
   test("a writer who isn't a member any more: the source is ignored and the reminder sent", async () => {
     const gone = structuredClone(entries[0]);
     (gone.document!.fields!.by as { stringValue: string }).stringValue = 'mallory@example.com';
