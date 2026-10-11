@@ -20,8 +20,8 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - uses: huishouden/pwa-kit/actions/leak-scan@acbee15625829e7b5ebf752bd354335a47dad67b # v0.113.0
-      - uses: huishouden/pwa-kit/actions/license-check@acbee15625829e7b5ebf752bd354335a47dad67b # v0.113.0 PolyForm Shield 1.0.0 (pwa-kit STANDARD.md "License")
+      - uses: huishouden/pwa-kit/actions/leak-scan@03987ceeb01eb81e3a03b854d0775e29279017d8 # v0.114.0
+      - uses: huishouden/pwa-kit/actions/license-check@03987ceeb01eb81e3a03b854d0775e29279017d8 # v0.114.0 PolyForm Shield 1.0.0 (pwa-kit STANDARD.md "License")
 
   build:
     runs-on: ubuntu-latest
@@ -42,7 +42,7 @@ jobs:
   release:
     needs: [leak-scan, build]
     if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
-    uses: huishouden/pwa-kit/.github/workflows/tag-release.yml@acbee15625829e7b5ebf752bd354335a47dad67b # v0.113.0
+    uses: huishouden/pwa-kit/.github/workflows/tag-release.yml@03987ceeb01eb81e3a03b854d0775e29279017d8 # v0.114.0
     permissions:
       contents: write
 

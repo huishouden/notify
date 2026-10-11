@@ -91,8 +91,8 @@ export interface Reminder {
   personal: boolean;
   audience: string[];
   /**
-   * The same notification in other languages (pwa-kit `./reminders` `texts`, built with
-   * `inEveryLang`): each device gets the one its subscription's `lang` names, else `title`/`body`.
+   * The same notification in the recipients' other languages (pwa-kit `./reminders` `texts`, built
+   * with `localizeReminders`): each device gets its member's (`deviceLang`), else `title`/`body`.
    */
   texts: Partial<Record<Lang, { title: string; body: string }>>;
   /**
@@ -256,7 +256,25 @@ export function targets(
   return [...chosen.values()];
 }
 
-/** What the device shows: the text in its language when the reminder has one, else the reminder's own title and body. */
+/**
+ * The language a device is notified in: its member's stored language (the same on every device they
+ * use), else the language its subscription was saved with.
+ */
+export function deviceLang(sub: Pick<Subscription, 'email' | 'lang'>, langs: Partial<Record<string, Lang>>): Lang | undefined {
+  return langs[sub.email.toLowerCase()] ?? sub.lang;
+}
+
+/** Each member's stored language from the household document's `langs`, known languages only. */
+export function toLangs(value: unknown): Partial<Record<string, Lang>> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([, l]) => isLang(l)).map(([e, l]) => [e.toLowerCase(), l as Lang]));
+}
+
+/**
+ * What the device shows: the text in its language when the reminder has one (apps store `texts`
+ * only for the recipients' languages other than the writer's), else the reminder's own title and
+ * body, which are the writer's.
+ */
 export function payload(reminder: Reminder, lang?: Lang): string {
   const text = (lang && reminder.texts[lang]) || { title: reminder.title, body: reminder.body };
   return JSON.stringify({ title: text.title, body: text.body, url: reminder.url, tag: reminder.id, app: reminder.app });
@@ -265,6 +283,8 @@ export function payload(reminder: Reminder, lang?: Lang): string {
 interface Household {
   members: string[];
   roles: Record<string, unknown>;
+  /** Each member's language (pwa-kit `./member-lang`, `households/{id}.langs`), by lowercase email. */
+  langs: Partial<Record<string, Lang>>;
   subscriptions: Subscription[];
   /** Each member's muted apps (@huishouden/pwa-kit/push `setAppMuted`), by lowercase email. */
   muted: Map<string, string[]>;
@@ -343,10 +363,11 @@ async function loadHousehold(db: Firestore, id: string): Promise<Household> {
     db.list(`households/${id}/notificationPrefs`),
   ]);
   const fields = home ? decodeFields(home.fields) : {};
-  const { members, roles } = fields;
+  const { members, roles, langs } = fields;
   return {
     members: Array.isArray(members) ? members.map(String) : [],
     roles: roles && typeof roles === 'object' && !Array.isArray(roles) ? (roles as Record<string, unknown>) : {},
+    langs: toLangs(langs),
     subscriptions: subs.map(toSubscription).filter((s): s is Subscription => !!s),
     muted: new Map(prefs.map(toMuted).filter((m): m is [string, string[]] => !!m)),
   };
@@ -489,8 +510,9 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
     stats.sent = claimed.length;
     const deliveries = claimed.flatMap(({ reminder, to }) => {
       if (to.length === 0) stats.noDevices++;
-      // Each device in its own language (`lang` on its subscription), when the reminder carries it.
-      return to.map((sub) => ({ sub, body: payload(reminder, sub.lang) }));
+      // Each device in its member's language, when the reminder carries it.
+      const langs = households.get(reminder.householdId)?.langs ?? {};
+      return to.map((sub) => ({ sub, body: payload(reminder, deviceLang(sub, langs)) }));
     });
     const results = await Promise.all(
       deliveries.map(async ({ sub, body }) => {

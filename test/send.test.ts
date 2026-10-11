@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, test } from 'bun:test';
 import { fromB64url, type Bytes } from '../src/b64';
 import { importKeyPair, deriveKeys } from '../src/webpush';
 import { resetTokenCache } from '../src/google';
-import { fairOrder, readsPerRun, sourceDone, linkHosts, payload, toTexts, PER_HOUSEHOLD_CAP, roleOf, run, safeLink, SUBREQUEST_BUDGET, targets, toMuted, toReminder, toSubscription, type Subscription } from '../src/send';
+import { deviceLang, toLangs, fairOrder, readsPerRun, sourceDone, linkHosts, payload, toTexts, PER_HOUSEHOLD_CAP, roleOf, run, safeLink, SUBREQUEST_BUDGET, targets, toMuted, toReminder, toSubscription, type Subscription } from '../src/send';
 import due from './fixtures/due-reminders.json';
 import household from './fixtures/household-h1.json';
 import subscriptions from './fixtures/subscriptions-h1.json';
@@ -42,7 +42,7 @@ const directionOf = (c: Call) => (c.body as { structuredQuery: { orderBy: { dire
  * Firestore, push services and Google's token endpoint. `due` is everything due, oldest first; each
  * query answers with its 50-reminder window of it. Households other than h1 have one member device.
  */
-function routes(over: { batchGet?: Route; prefs?: (household: string) => unknown; personal?: (c: Call) => Response | undefined; due?: Entry[]; newest?: (c: Call) => Response | undefined; write?: (name: string) => Outcome | undefined; batchWrite?: Route; subs?: (household: string) => unknown; push?: Route } = {}): Route[] {
+function routes(over: { home?: unknown; batchGet?: Route; prefs?: (household: string) => unknown; personal?: (c: Call) => Response | undefined; due?: Entry[]; newest?: (c: Call) => Response | undefined; write?: (name: string) => Outcome | undefined; batchWrite?: Route; subs?: (household: string) => unknown; push?: Route } = {}): Route[] {
   const docs = (over.due ?? due).filter((e) => e.document);
   return [
     (c) => (c.url === 'https://oauth2.googleapis.com/token' ? json(tokenResponse) : undefined),
@@ -58,7 +58,7 @@ function routes(over: { batchGet?: Route; prefs?: (household: string) => unknown
       const m = c.method === 'GET' && c.url.match(/\/households\/([^/?]+)(\/pushSubscriptions\?pageSize=300)?$/);
       if (!m) return undefined;
       const [, id, subsPath] = m;
-      if (!subsPath) return json(id === 'h1' ? household : { ...household, name: household.name.replace('/h1', `/${id}`) });
+      if (!subsPath) return json(id === 'h1' ? (over.home ?? household) : { ...household, name: household.name.replace('/h1', `/${id}`) });
       return json(over.subs?.(id) ?? (id === 'h1' ? subscriptions : oneDevice(id)));
     },
     (c) => {
@@ -290,6 +290,19 @@ describe('each device in its own language', () => {
     expect(JSON.parse(payload(toReminder(base)!, 'nl')).title).toBe(r.title);
   });
 
+  test("each device is notified in its member's stored language, else its subscription's", () => {
+    const langs = toLangs({ 'Sam@Example.com': 'nl', 'alex@example.com': 'fr', 'kim@example.com': 3 });
+    expect(langs).toEqual({ 'sam@example.com': 'nl' });
+    expect(toLangs(null)).toEqual({});
+    expect(toLangs(['nl'])).toEqual({});
+    expect(deviceLang({ email: 'sam@example.com', lang: 'es' }, langs)).toBe('nl');
+    expect(deviceLang({ email: 'alex@example.com', lang: 'es' }, langs)).toBe('es');
+    expect(deviceLang({ email: 'alex@example.com' }, langs)).toBeUndefined();
+    // A reminder written in a one-language household has no texts: its own words.
+    const r = toReminder(withTexts)!;
+    expect(JSON.parse(payload({ ...r, texts: {} }, deviceLang({ email: 'sam@example.com', lang: 'es' }, langs))).title).toBe(r.title);
+  });
+
   test('a subscription carries its language when it has a known one', () => {
     const sub = subscriptions.documents[0] as unknown as Parameters<typeof toSubscription>[0];
     expect(toSubscription(sub)!.lang).toBeUndefined();
@@ -306,13 +319,18 @@ describe('each device in its own language', () => {
     expect(withApps(list(3)).apps).toBeUndefined();
   });
 
-  test('a run sends each device its own language', async () => {
+  test("a run sends each device its member's stored language, else its own", async () => {
     const subs = structuredClone(subscriptions);
     for (const d of subs.documents) (d.fields as Record<string, unknown>).lang = str('es');
     const reminderDue = due.map((e) => (e.document && e.document.name === base.name ? { ...e, document: withTexts } : e)) as typeof due;
-    const { fetchImpl, calls } = stubFetch(routes({ due: reminderDue as never, subs: (id) => (id === 'h1' ? subs : oneDevice(id)) }));
+    // Sam chose Dutch in the apps; Alex has none stored, so their devices' Spanish stands.
+    const home = { ...household, fields: { ...household.fields, langs: { mapValue: { fields: { 'sam@example.com': str('nl') } } } } };
+    const { fetchImpl, calls } = stubFetch(routes({ home, due: reminderDue as never, subs: (id) => (id === 'h1' ? subs : oneDevice(id)) }));
     await run(await testEnv(), NOW, fetchImpl as never, quiet);
-    expect(calls.filter(isPush).length).toBeGreaterThan(0);
+    const pushes = calls.filter(isPush);
+    const titleAt = async (endpoint: string) => (await Promise.all(pushes.filter((c) => c.url === endpoint).map((c) => decryptPush(c.body as Bytes)))).filter((m) => m.tag === toReminder(withTexts)!.id).map((m) => m.title);
+    expect(await titleAt('https://push.example.net/alex-phone-pet')).toEqual(['Biscuit: 1 tableta']);
+    expect(await titleAt('https://gone.example.org/sam-old-laptop')).toEqual(['Biscuit: 1 tablet']);
   });
 });
 
