@@ -39,9 +39,10 @@ Every 5 minutes:
    `muted`, @huishouden/pwa-kit/push `setAppMuted`).
 
    With the household, in the same go, one `batchGet` reads every record its due reminders name in
-   their `source` (pwa-kit `ReminderSource`: a bill, a task, a dose), each record once. A reminder
-   whose source says it is done (a bill paid or skipped, a task ticked, a dose marked, its record
-   removed) is not sent but deleted, in step 5's `batchWrite`, so paying a bill from the portal's
+   their `source` (pwa-kit `ReminderSource`: a bill, a task, a dose and its medicine, grouped), each
+   record once. A reminder whose source says it is done (a bill paid or skipped, a task ticked, every
+   dose marked or its medicine's notifications turned off, stopped or removed, a record removed) is
+   not sent but deleted, in step 5's `batchWrite`, so paying a bill from the portal's
    To-do list or the connector stops its reminders without Bills being opened. The kit's
    `@huishouden/pwa-kit/reminder-source` decides it, the same code the apps write sources with: a
    source names only its app's own collections and the fields that say a record is done

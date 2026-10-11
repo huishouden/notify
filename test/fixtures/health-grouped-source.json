@@ -1,0 +1,195 @@
+{
+ "mapValue": {
+  "fields": {
+   "checks": {
+    "arrayValue": {
+     "values": [
+      {
+       "mapValue": {
+        "fields": {
+         "doc": {
+          "stringValue": "healthPeople/p1/doses/m1_2026-01-01T0800"
+         },
+         "absent": {
+          "booleanValue": true
+         },
+         "group": {
+          "integerValue": "0"
+         }
+        }
+       }
+      },
+      {
+       "mapValue": {
+        "fields": {
+         "doc": {
+          "stringValue": "healthPeople/p1/meds/m1"
+         },
+         "due": {
+          "arrayValue": {
+           "values": [
+            {
+             "mapValue": {
+              "fields": {
+               "field": {
+                "stringValue": "remind"
+               },
+               "in": {
+                "arrayValue": {
+                 "values": [
+                  {
+                   "booleanValue": true
+                  }
+                 ]
+                }
+               }
+              }
+             }
+            },
+            {
+             "mapValue": {
+              "fields": {
+               "field": {
+                "stringValue": "endDate"
+               },
+               "notIn": {
+                "arrayValue": {
+                 "values": [
+                  {
+                   "stringValue": "2025-12-31"
+                  },
+                  {
+                   "stringValue": "2025-12-30"
+                  },
+                  {
+                   "stringValue": "2025-12-29"
+                  },
+                  {
+                   "stringValue": "2025-12-28"
+                  },
+                  {
+                   "stringValue": "2025-12-27"
+                  },
+                  {
+                   "stringValue": "2025-12-26"
+                  },
+                  {
+                   "stringValue": "2025-12-25"
+                  },
+                  {
+                   "stringValue": "2025-12-24"
+                  }
+                 ]
+                }
+               }
+              }
+             }
+            }
+           ]
+          }
+         },
+         "group": {
+          "integerValue": "0"
+         }
+        }
+       }
+      },
+      {
+       "mapValue": {
+        "fields": {
+         "doc": {
+          "stringValue": "healthPeople/p1/doses/m2_2026-01-01T0800"
+         },
+         "absent": {
+          "booleanValue": true
+         },
+         "group": {
+          "integerValue": "1"
+         }
+        }
+       }
+      },
+      {
+       "mapValue": {
+        "fields": {
+         "doc": {
+          "stringValue": "healthPeople/p1/meds/m2"
+         },
+         "due": {
+          "arrayValue": {
+           "values": [
+            {
+             "mapValue": {
+              "fields": {
+               "field": {
+                "stringValue": "remind"
+               },
+               "in": {
+                "arrayValue": {
+                 "values": [
+                  {
+                   "booleanValue": true
+                  }
+                 ]
+                }
+               }
+              }
+             }
+            },
+            {
+             "mapValue": {
+              "fields": {
+               "field": {
+                "stringValue": "endDate"
+               },
+               "notIn": {
+                "arrayValue": {
+                 "values": [
+                  {
+                   "stringValue": "2025-12-31"
+                  },
+                  {
+                   "stringValue": "2025-12-30"
+                  },
+                  {
+                   "stringValue": "2025-12-29"
+                  },
+                  {
+                   "stringValue": "2025-12-28"
+                  },
+                  {
+                   "stringValue": "2025-12-27"
+                  },
+                  {
+                   "stringValue": "2025-12-26"
+                  },
+                  {
+                   "stringValue": "2025-12-25"
+                  },
+                  {
+                   "stringValue": "2025-12-24"
+                  }
+                 ]
+                }
+               }
+              }
+             }
+            }
+           ]
+          }
+         },
+         "group": {
+          "integerValue": "1"
+         }
+        }
+       }
+      }
+     ]
+    }
+   },
+   "any": {
+    "booleanValue": true
+   }
+  }
+ }
+}

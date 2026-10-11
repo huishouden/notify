@@ -13,6 +13,7 @@ import personalDue from './fixtures/personal-reminders.json';
 import v from './fixtures/rfc8291.json';
 import sourceDue from './fixtures/source-reminders.json';
 import batchGetBills from './fixtures/batch-get-bills.json';
+import groupedSource from './fixtures/health-grouped-source.json';
 import { json, stubFetch, testEnv, type Call, type Route } from './helpers';
 
 const NOW = 1_767_268_800_000;
@@ -717,6 +718,41 @@ describe('reminders with a source', () => {
     // On a shared reminder, which every member reads, a Health source doesn't count.
     expect(sourceDone({ ...dose, personal: false, by: 'sam@example.com' }, home, given(['sam@example.com']))).toBe(false);
     expect(sourceDone({ ...dose, by: 'sam@example.com' }, home, given(['alex@example.com']))).toBe(false);
+  });
+
+  test("a Health dose reminder, each dose grouped with its medicine: done once every dose is marked or its medicine's reminders are off or it stopped", () => {
+    // As Health writes it (pwa-kit `group`): due while a dose is unmarked and its medicine still wants reminders.
+    const stored = structuredClone(personalDue[0].document) as unknown as { fields: Record<string, unknown> };
+    stored.fields.source = groupedSource;
+    const dose = toReminder(stored as unknown as Parameters<typeof toReminder>[0])!;
+    expect(dose.source?.checks).toHaveLength(4);
+    const home = { members: ['alex@example.com', 'sam@example.com'], roles: {} };
+    const med = (remind: boolean, endDate?: string) => ({ remind, ...(endDate ? { endDate } : {}) });
+    const read = (over: Record<string, Record<string, unknown> | null> = {}) =>
+      new Map<string, Record<string, unknown> | null>(Object.entries({
+        'healthPeople/p1': { readers: ['alex@example.com'] },
+        'healthPeople/p1/doses/m1_2026-01-01T0800': null,
+        'healthPeople/p1/doses/m2_2026-01-01T0800': null,
+        'healthPeople/p1/meds/m1': med(true),
+        'healthPeople/p1/meds/m2': med(true),
+        ...over,
+      }));
+    expect(sourceDone(dose, home, read())).toBe(false);
+    // Reminders off on one: the other's unmarked dose still keeps it.
+    expect(sourceDone(dose, home, read({ 'healthPeople/p1/meds/m1': med(false) }))).toBe(false);
+    // Off on both, or off on one and the other's dose given: deleted unsent.
+    expect(sourceDone(dose, home, read({ 'healthPeople/p1/meds/m1': med(false), 'healthPeople/p1/meds/m2': med(false) }))).toBe(true);
+    expect(sourceDone(dose, home, read({ 'healthPeople/p1/meds/m1': med(false), 'healthPeople/p1/doses/m2_2026-01-01T0800': { status: 'given' } }))).toBe(true);
+    // Stopped the day before the dose, or removed.
+    expect(sourceDone(dose, home, read({ 'healthPeople/p1/meds/m1': med(true, '2025-12-31'), 'healthPeople/p1/meds/m2': null }))).toBe(true);
+    // Stopped with the dose's day as its last: still due.
+    expect(sourceDone(dose, home, read({ 'healthPeople/p1/meds/m1': med(true, '2026-01-01'), 'healthPeople/p1/meds/m2': null }))).toBe(false);
+    // Only from one of the person's readers, on a personal reminder, never a kid's: otherwise it is sent.
+    const off = read({ 'healthPeople/p1/meds/m1': med(false), 'healthPeople/p1/meds/m2': med(false) });
+    expect(sourceDone({ ...dose, by: 'sam@example.com' }, home, off)).toBe(false);
+    expect(sourceDone({ ...dose, personal: false }, home, off)).toBe(false);
+    const kidHome = { ...home, roles: { 'sam@example.com': 'kid' } };
+    expect(sourceDone({ ...dose, by: 'sam@example.com' }, kidHome, new Map([...off, ['healthPeople/p1', { readers: ['alex@example.com', 'sam@example.com'] }]]))).toBe(false);
   });
 
   test("a kick-count reminder is done once that day's session exists, and only a member or admin's counts", () => {
