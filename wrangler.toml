@@ -10,6 +10,16 @@ crons = ["*/5 * * * *"]
 [observability]
 enabled = true
 
+# The day's Firestore reads and the quota pause (src/reads.ts, pwa-kit `ReadBudget`). SQLite-backed:
+# the only kind on the free plan.
+[[durable_objects.bindings]]
+name = "READ_LEDGER"
+class_name = "ReadLedgerObject"
+
+[[migrations]]
+tag = "v1-read-ledger"
+new_sqlite_classes = ["ReadLedgerObject"]
+
 # Public values. Secrets are set with `bunx wrangler secret put`, never written here:
 #   GOOGLE_SERVICE_ACCOUNT  service account key JSON (roles/datastore.user only)
 #   VAPID_PRIVATE_KEY       from `bun run vapid`
@@ -25,8 +35,35 @@ VAPID_SUBJECT = "https://github.com/huishouden/notify"
 LINK_HOSTS = "huishouden-piekstra.web.app huishouden-*.web.app"
 # New Relic account for the NotifyRun heartbeat (public; the ingest key is a secret).
 NEW_RELIC_ACCOUNT_ID = "8578044"
-# Firestore reads a day this Worker may spend on households, of the free plan's 50,000 shared with
-# every app and the other Workers (README, "Limits"): 1/288 of it per run (the cron's runs a day),
-# past which households wait for a later run; the due-reminder queries (576 a day quiet) come on
-# top. Digits only: anything else makes every run throw.
-FIRESTORE_NOTIFY_READS = "3000"
+# Firestore reads a day this Worker may use, the due-reminder queries included (576 a quiet day),
+# of the free plan's 50,000 shared with every app and Worker (pwa-kit STANDARD.md "Read budgets";
+# README, "Limits"). Spent: no reads until midnight Pacific. 1/288 of it per run is the share for
+# household reads, past which households wait for a later run. Digits only: anything else makes
+# every run throw.
+FIRESTORE_NOTIFY_READS = "4000"
+
+# Staging: the same Worker against huishouden-staging, for a PR's staging evidence (`hh dev evidence
+# --staging`: deploy, then an HTTP check). No schedule and no secrets: it sends nothing. Runs are
+# tested with the fakes (`bun test`); a staging run needs a staging service account's key
+# (GOOGLE_SERVICE_ACCOUNT) and a VAPID pair of its own, set with `wrangler secret put --env staging`.
+[env.staging]
+name = "huishouden-notify-staging"
+workers_dev = true
+
+[env.staging.triggers]
+crons = []
+
+[[env.staging.durable_objects.bindings]]
+name = "READ_LEDGER"
+class_name = "ReadLedgerObject"
+
+[[env.staging.migrations]]
+tag = "v1-read-ledger"
+new_sqlite_classes = ["ReadLedgerObject"]
+
+[env.staging.vars]
+FIREBASE_PROJECT_ID = "huishouden-staging"
+VAPID_PUBLIC_KEY = ""
+VAPID_SUBJECT = "https://github.com/huishouden/notify"
+LINK_HOSTS = "huishouden-staging.web.app huishouden-staging-*.web.app"
+FIRESTORE_NOTIFY_READS = "1000"

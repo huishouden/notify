@@ -1,15 +1,19 @@
 import { run, type Env } from './send';
 import { monitoredRun, type HeartbeatEnv } from './heartbeat';
+import { ledgerOf, type LedgerEnv } from './reads';
+
+export { ReadLedgerObject } from './reads';
 
 export default {
-  async scheduled(controller: ScheduledController, env: Env & HeartbeatEnv, ctx: ExecutionContext): Promise<void> {
+  async scheduled(controller: ScheduledController, env: Env & HeartbeatEnv & LedgerEnv, ctx: ExecutionContext): Promise<void> {
     const fetchImpl: typeof fetch = (input, init) => fetch(input, init);
+    const log = (line: string) => console.log(line);
     ctx.waitUntil(
       monitoredRun(env, controller.scheduledTime, {
-        run: () => run(env, controller.scheduledTime, fetchImpl),
+        run: () => run(env, controller.scheduledTime, fetchImpl, log, { ledger: ledgerOf(env) }),
         fetch: fetchImpl,
         now: () => Date.now(),
-        log: (line) => console.log(line),
+        log,
       }),
     );
   },
@@ -18,4 +22,4 @@ export default {
   async fetch(): Promise<Response> {
     return new Response('huishouden notify: sends due reminders every 5 minutes\n', { headers: { 'Content-Type': 'text/plain' } });
   },
-} satisfies ExportedHandler<Env & HeartbeatEnv>;
+} satisfies ExportedHandler<Env & HeartbeatEnv & LedgerEnv>;

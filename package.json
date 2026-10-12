@@ -10,6 +10,7 @@
     "vapid": "bun scripts/vapid.ts",
     "dev": "wrangler dev --test-scheduled",
     "deploy": "wrangler deploy",
+    "deploy:staging": "wrangler deploy --env staging",
     "prepare": "git config core.hooksPath .githooks || true"
   },
   "devDependencies": {
@@ -19,6 +20,6 @@
     "wrangler": "^4.147.0"
   },
   "dependencies": {
-    "@huishouden/pwa-kit": "https://github.com/huishouden/pwa-kit/releases/download/v0.118.0/pwa-kit-0.118.0.tgz"
+    "@huishouden/pwa-kit": "https://github.com/huishouden/pwa-kit/releases/download/v0.118.1/pwa-kit-0.118.1.tgz"
   }
 }

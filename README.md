@@ -79,8 +79,9 @@ malformed ones (`invalid`), in the same `batchWrite` as the claims.
 Each run logs one line of counts (`due`, `sent`, `pushed`, `failed`, `removed`, `late`,
 `invalid`, `raced`, `noDevices`, `capped`, `done`: deleted unsent because their source is done,
 `deferred`: something due was left for a later
-run, `reads`: the Firestore reads the run was billed, and `quota`: Firestore refused for the
-project's daily quota).
+run, `reads`: the Firestore reads the run was billed, `dayReads`: the Worker's reads on the quota's
+day so far, `quota`: Firestore refused for the project's daily quota, and `readStop`: what stopped
+the run's reads, if anything: `paused`, `notify`, `run` or `project`, below).
 
 The push message is JSON the kit's service worker shows: `{ title, body, url, tag, app }`;
 tapping it opens `url` in the app. Each device gets it in its member's language: the member's stored
@@ -119,25 +120,31 @@ which are in the writer's language.
   reminders name as their source. Each run counts what it was billed (`reads` in the log line and
   the `NotifyRun` event).
 
-  `FIRESTORE_NOTIFY_READS` (`wrangler.toml`, 3,000 a day) caps the household reads. The Worker
-  keeps no state between runs, so the cap is spent per run: 1/288 of it (the cron's runs a day),
-  10 reads with 3,000, about one household's members, subscriptions and preferences. Past it,
-  further households wait for a later run, unsent and unmarked; the first household of a run is
-  always read, so a cap set too low slows sending rather than stopping it. With several households
-  due in the same 5 minutes, the later ones go out up to 5 minutes later each. The due-reminder
-  queries come on top and always run: 576 a day when quiet, up to 150 a run under a backlog of 50
-  or more (the newest-first window is what lets other households past one household's backlog).
-  So the Worker's day is at most about 576 + 3,000 reads outside a backlog. Unset or 0: no cap.
-  Any other value that isn't a whole number (digits only, such as 3000) makes every run throw (the
-  `NotifyRun` error alert fires).
+  Every read goes through the kit's `ReadBudget` (pwa-kit STANDARD.md "Read budgets"; `runReads`
+  in `src/send.ts`, the ledger in `src/reads.ts`), which counts what each answer is billed for:
+  - **A run** may be billed for at most 400 reads (`RUN_READS`: three windows of 50 due reminders
+    and a few households). Past it, every further read and the claim are refused, and the run stops
+    as below with `readStop: "run"`, before claiming or pushing anything.
+  - **The day**: `FIRESTORE_NOTIFY_READS` (`wrangler.toml`, 4,000 a day, the queries included) is
+    counted per Pacific day in the `READ_LEDGER` Durable Object (SQLite, three requests a run).
+    Once spent, runs read nothing until midnight Pacific (`readStop: "notify"`), and what is due
+    goes out after it, if no more than 12 hours late. 1/288 of it (13 reads) is each run's share for
+    household reads: past it, further households wait for a later run, unsent and unmarked; the
+    first household of a run is always read, so the share slows sending rather than stopping it.
+    With several households due in the same 5 minutes, the later ones go out up to 5 minutes later
+    each. A quiet day is 576 reads. Unset or 0: no cap. Any other value that isn't a whole number
+    (digits only, such as 4000) makes every run throw (the `NotifyRun` error alert fires).
+  - **Read-budget tests** (`test/send.test.ts`, "read budget"): a quiet run 2 reads, the fixture's
+    run 11, a backlog across 30 households 113; the caps above.
 
   When the project's reads are used up (by anything: every app and Worker share them), Firestore
   answers 429 `RESOURCE_EXHAUSTED` and the run stops where it is: refused while reading (the
   queries, a household, the sources), before claiming or pushing anything. Refused later, deleting
   a dropped subscription after the pushes, what was claimed and pushed stays sent. Either way the
   run fails with `QuotaExhausted` and its `NotifyRun` event carries the counts so far with
-  `quota: true`. Reminders stay unsent and go out at the first run after reads come back, if
-  they are no more than 12 hours late (`MAX_LATE_MS`).
+  `quota: true`, and the runs of the next 15 minutes read nothing (`readStop: "paused"`) rather than
+  ask again. Reminders stay unsent and go out at the first run after reads come back, if they are
+  no more than 12 hours late (`MAX_LATE_MS`).
 - **iPhone and iPad** only show notifications for an app added to the Home Screen (Share > Add to
   Home Screen), on iOS/iPadOS 16.4 or later. In Safari tabs, and on older versions, there is no Web
   Push. `pushSupport()` in the kit says which case a device is in, so the app can explain.
@@ -253,6 +260,13 @@ bun install
 bun run lint
 bun test        # Web Push against the RFC 8291 test vectors, token, and run logic with fetch stubbed
 ```
+
+**Staging** (`[env.staging]`, `huishouden-notify-staging`, against `huishouden-staging`): `hh dev
+evidence --staging` deploys the branch there with your wrangler login (`bun run deploy:staging`) and
+checks it over HTTP at the repo's `STAGING_WORKER_URL`. It has no schedule and no secrets, so it sends
+nothing: it shows the build, its bindings and its Durable Object migration deploy. Runs are tested with
+the fakes above. A staging run would need a staging service account's key (`GOOGLE_SERVICE_ACCOUNT`)
+and a VAPID pair of its own, set with `wrangler secret put --env staging`.
 
 Test data is invented (`example.com` addresses, demo project ids); the only real keys in the tests
 are the published RFC 8291 example keys. Never commit a service account key or VAPID private key:

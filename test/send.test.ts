@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, test } from 'bun:test';
 import { fromB64url, type Bytes } from '../src/b64';
 import { importKeyPair, deriveKeys } from '../src/webpush';
 import { resetTokenCache } from '../src/google';
-import { deviceLang, groupPayload, mergeKeyOf, toLangs, fairOrder, readsPerRun, sourceDone, linkHosts, payload, toTexts, PER_HOUSEHOLD_CAP, roleOf, run, RunStopped, safeLink, SUBREQUEST_BUDGET, targets, toMuted, toReminder, toSubscription, type Subscription } from '../src/send';
+import { deviceLang, groupPayload, mergeKeyOf, toLangs, fairOrder, dayReads, householdShare, sourceDone, linkHosts, payload, toTexts, PER_HOUSEHOLD_CAP, roleOf, run, RUN_READS, RunStopped, safeLink, SUBREQUEST_BUDGET, targets, toMuted, toReminder, toSubscription, type Subscription } from '../src/send';
 import due from './fixtures/due-reminders.json';
 import household from './fixtures/household-h1.json';
 import subscriptions from './fixtures/subscriptions-h1.json';
@@ -18,6 +18,8 @@ import batchGetBills from './fixtures/batch-get-bills.json';
 import groupedSource from './fixtures/health-grouped-source.json';
 import mergeDue from './fixtures/merge-reminders.json';
 import { json, stubFetch, testEnv, type Call, type Route } from './helpers';
+import { memoryLedger } from '@huishouden/pwa-kit/read-budget';
+import { expectReads, writeBeforeEachRead } from '@huishouden/pwa-kit/read-test';
 
 const NOW = 1_767_268_800_000;
 const DOCS = 'https://firestore.googleapis.com/v1/projects/demo-huishouden/databases/(default)/documents';
@@ -138,6 +140,11 @@ const subs = (subscriptions.documents as Parameters<typeof toSubscription>[0][])
 const reminders = due.filter((r) => r.document).map((r) => toReminder(r.document as never)!);
 
 beforeEach(resetTokenCache);
+let env: Awaited<ReturnType<typeof testEnv>>;
+beforeEach(async () => {
+  env = await testEnv();
+});
+const testEnvSync = () => env;
 
 describe('targets', () => {
   const members = ['alex@example.com', 'sam@example.com'];
@@ -371,12 +378,13 @@ describe('fairOrder', () => {
   });
 });
 
-describe('readsPerRun', () => {
+describe("the day's reads and each run's household share", () => {
   test('1/288 of the day, at least one; unset or zero: no limit; anything else throws', () => {
-    expect(readsPerRun('3000')).toBe(10);
-    expect(readsPerRun('100')).toBe(1);
-    for (const v of [undefined, '', '0']) expect(readsPerRun(v)).toBe(Infinity);
-    for (const v of ['-5', 'lots', '3,000', '3k', '2.5']) expect(() => readsPerRun(v)).toThrow('FIRESTORE_NOTIFY_READS');
+    const share = (v: string | undefined) => householdShare(dayReads({ FIRESTORE_NOTIFY_READS: v }));
+    expect(share('4000')).toBe(13);
+    expect(share('100')).toBe(1);
+    for (const v of [undefined, '', '0']) expect(share(v)).toBe(Infinity);
+    for (const v of ['-5', 'lots', '3,000', '3k', '2.5']) expect(() => share(v)).toThrow('FIRESTORE_NOTIFY_READS');
   });
 });
 
@@ -386,7 +394,7 @@ describe('run', () => {
     const stats = await run(await testEnv(), NOW, fetchImpl, quiet);
     // Both reminders reach the dropped laptop; it is deleted once.
     // Reads: 3 due and the empty personal query (1), the household (1), its 5 subscriptions and no prefs (1).
-    expect(stats).toEqual({ due: 3, sent: 2, pushed: 3, failed: 2, removed: 1, late: 1, invalid: 0, raced: 0, noDevices: 0, capped: 0, done: 0, deferred: false, reads: 11, quota: false });
+    expect(stats).toEqual({ due: 3, sent: 2, pushed: 3, failed: 2, removed: 1, late: 1, invalid: 0, raced: 0, noDevices: 0, capped: 0, done: 0, deferred: false, reads: 11, quota: false, dayReads: 11, readStop: '' });
 
     // The oldest-first window isn't full, so it holds everything due: no newest-first query.
     const queries = calls.filter((c) => c.url.endsWith(':runQuery'));
@@ -590,9 +598,9 @@ describe('run', () => {
     expect(writesOf(calls)[0].map((w) => shortName(w.update.name))).toContain('households/h2/reminders/only');
   });
 
-  test('a budget too small for any household still sends the first one each run', async () => {
+  test("a run's household share too small for any household (1 read) still sends the first one each run", async () => {
     const { fetchImpl } = stubFetch(routes({ due: [dueDoc('h1', 'a', NOW - 1000)] }));
-    expect(await run({ ...(await testEnv()), FIRESTORE_NOTIFY_READS: '1' }, NOW, fetchImpl, quiet)).toMatchObject({ sent: 1 });
+    expect(await run({ ...(await testEnv()), FIRESTORE_NOTIFY_READS: '288' }, NOW, fetchImpl, quiet)).toMatchObject({ sent: 1 });
   });
 
   test('stops within the subrequest budget, never claiming a reminder it cannot finish', async () => {
@@ -915,5 +923,98 @@ describe('reminders that merge', () => {
     const { fetchImpl, calls } = stubFetch(routes({ due: entries, batchGet: sources([]), write: (name) => (name.endsWith('/home-prep-garbage-1') ? 'precondition' : undefined) }));
     expect(await run(await testEnv(), NOW, fetchImpl, quiet)).toMatchObject({ sent: 1, raced: 1 });
     expect(new Set(await pushedTitles(calls))).toEqual(new Set(['Put the recycling out']));
+  });
+});
+
+// Read budgets (pwa-kit STANDARD.md "Read budgets"): what a run is billed for, with a ceiling, and
+// the run's caps (RUN_READS; the day's FIRESTORE_NOTIFY_READS in the read ledger; the quota pause).
+describe('read budget', () => {
+  const day = (t: number) => new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit' }).format(t);
+
+  test('a quiet run: the two due-reminder queries, 1 read each', async () => {
+    const { fetchImpl } = stubFetch(routes({ due: [] }));
+    const ledger = memoryLedger();
+    const { value } = await expectReads((meter) => run({ ...(testEnvSync()), FIRESTORE_NOTIFY_READS: '4000' }, NOW, meter(fetchImpl), quiet, { ledger }), { max: 2, min: 2, label: 'quiet run' });
+    expect(value).toMatchObject({ reads: 2, dayReads: 2, readStop: '' });
+    expect(ledger.counts.get(`${day(NOW)}|notify`)).toBe(2);
+  });
+
+  test("the fixture's run: the queries, one household's document, devices and preferences", async () => {
+    const { fetchImpl } = stubFetch(routes());
+    const { value, reads } = await expectReads((meter) => run(testEnvSync(), NOW, meter(fetchImpl), quiet, { ledger: memoryLedger() }), { max: 11, min: 11, label: 'one household' });
+    // The Worker's own count is what the wire bills.
+    expect(value.reads).toBe(reads);
+  });
+
+  test('a backlog across 30 households: within RUN_READS, fewer than the subrequest budget allows', async () => {
+    const due = byAt(Array.from({ length: 30 }, (_, h) => backlog(`h${h + 10}`, 2, NOW - h * 1000)).flat());
+    const { fetchImpl } = stubFetch(routes({ due }));
+    await expectReads((meter) => run({ ...testEnvSync(), FIRESTORE_NOTIFY_READS: '4000' }, NOW, meter(fetchImpl), quiet, { ledger: memoryLedger() }), { max: 113, label: 'backlog of 30 households' });
+  });
+
+  test("the day's share spent: nothing is read, nothing claimed, the run says why", async () => {
+    const { fetchImpl, calls } = stubFetch(routes());
+    const ledger = memoryLedger();
+    await ledger.add(day(NOW), ['notify'], 4000);
+    const stats = await run({ ...testEnvSync(), FIRESTORE_NOTIFY_READS: '4000' }, NOW, fetchImpl, quiet, { ledger });
+    expect(stats).toMatchObject({ reads: 0, dayReads: 4000, readStop: 'notify', deferred: true, sent: 0 });
+    expect(calls).toHaveLength(0);
+  });
+
+  test("Firestore's quota: the run stops (quota) and pauses the next runs, which read nothing", async () => {
+    const ledger = memoryLedger();
+    const refused = stubFetch([(c) => (c.url.endsWith(':runQuery') ? json(quotaExhausted, 429) : undefined), ...routes()]);
+    const stopped = (await run(testEnvSync(), NOW, refused.fetchImpl, quiet, { ledger }).catch((e) => e)) as RunStopped;
+    expect(stopped).toBeInstanceOf(RunStopped);
+    expect(stopped.stats).toMatchObject({ quota: true, readStop: 'project' });
+    expect(ledger.pausedUntil).toBeGreaterThan(NOW);
+    const next = stubFetch(routes());
+    expect(await run(testEnvSync(), NOW + 5 * 60_000, next.fetchImpl, quiet, { ledger })).toMatchObject({ readStop: 'paused', reads: 0, deferred: true });
+    expect(next.calls).toHaveLength(0);
+  });
+
+  test('a run that fails for any other reason still adds its reads to the day', async () => {
+    const ledger = memoryLedger();
+    const { fetchImpl } = stubFetch(routes({ batchWrite: () => json({ error: { code: 500, status: 'INTERNAL' } }, 500) }));
+    const error = await run(testEnvSync(), NOW, fetchImpl, quiet, { ledger }).catch((e) => e);
+    expect(error).toBeInstanceOf(Error);
+    expect(ledger.counts.get(`${day(NOW)}|notify`)).toBe(11);
+  });
+
+  test('a run past RUN_READS stops before claiming or pushing anything', async () => {
+    // Households with a full page (300) of devices of someone no longer a member: no pushes, so the
+    // run goes on reading households, and the third household's read is refused.
+    const many = { documents: manyDevices(300).documents.map((d) => ({ ...d, fields: { ...d.fields, email: { stringValue: 'gone@example.com' } } })) };
+    const due = byAt(Array.from({ length: 4 }, (_, h) => backlog(`h${h + 10}`, 1, NOW - h * 1000)).flat());
+    const { fetchImpl, calls } = stubFetch(routes({ due, subs: () => many }));
+    const stopped = (await run(testEnvSync(), NOW, fetchImpl, quiet, { ledger: memoryLedger() }).catch((e) => e)) as RunStopped;
+    expect(stopped).toBeInstanceOf(RunStopped);
+    expect(stopped.stats).toMatchObject({ quota: false, readStop: 'run' });
+    expect(stopped.stats.reads).toBeGreaterThan(RUN_READS);
+    expect(stopped.stats.reads).toBeLessThanOrEqual(RUN_READS + 302);
+    expect(calls.filter((c) => c.url.endsWith(':batchWrite') || isPush(c))).toHaveLength(0);
+  });
+});
+
+// Interleaving (pwa-kit STANDARD.md "Read budgets"): members keep scheduling while a run reads. A
+// new due reminder lands before every read the run makes; the run still makes one pass, within its
+// budget, and leaves the newcomers for the next run rather than chasing them.
+describe('interleaving', () => {
+  test('a reminder scheduled before every read: one pass, no re-query, the newcomers wait for the next run', async () => {
+    const due: Entry[] = [dueDoc('h1', 'first', NOW - 60_000)];
+    const live: Route = (c) => {
+      if (c.url !== `${DOCS}:runQuery` || collectionOf(c) !== 'reminders') return undefined;
+      return json([...due.filter((e) => e.document), { readTime: '2026-01-01T12:00:00.000000Z' }]);
+    };
+    const { fetchImpl, calls } = stubFetch([live, ...routes()]);
+    const { value, reads } = await expectReads((meter) => run(testEnvSync(), NOW, meter(fetchImpl), quiet, { ledger: memoryLedger() }), {
+      max: 11,
+      label: 'a run with a reminder scheduled before each read',
+      beforeRead: writeBeforeEachRead((n) => void due.push(dueDoc('h1', `late-${n}`, NOW - 1000))),
+    });
+    expect(value.reads).toBe(reads);
+    // The windows are read once each; what landed after them goes out on the next run.
+    expect(calls.filter((c) => c.url.endsWith(':runQuery'))).toHaveLength(2);
+    expect(value.sent).toBeGreaterThanOrEqual(1);
   });
 });

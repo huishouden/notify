@@ -3,7 +3,7 @@ import { heartbeatEvent, monitoredRun, redact, sendHeartbeat } from '../src/hear
 import { RunStopped, type RunStats } from '../src/send';
 import { QuotaExhausted } from '../src/firestore';
 
-const stats: RunStats = { due: 2, sent: 2, pushed: 3, failed: 0, removed: 1, late: 0, invalid: 0, raced: 0, noDevices: 0, capped: 0, done: 0, deferred: false, reads: 12, quota: false };
+const stats: RunStats = { due: 2, sent: 2, pushed: 3, failed: 0, removed: 1, late: 0, invalid: 0, raced: 0, noDevices: 0, capped: 0, done: 0, deferred: false, reads: 12, quota: false, dayReads: 40, readStop: '' };
 const ENV = { NEW_RELIC_ACCOUNT_ID: '1234567', NEW_RELIC_LICENSE_KEY: 'example-key' };
 
 function recorder(response: () => Response | Promise<Response> = () => new Response('{"success":true}')) {

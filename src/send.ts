@@ -5,6 +5,7 @@ import { redact } from './redact';
 import { readSource, sourceAllowed, sourceReads, stillDue, type ReminderSource, type SourceDocs } from '@huishouden/pwa-kit/reminder-source';
 import { mergedReminderText, reminderMergeKey } from '@huishouden/pwa-kit/reminder-core';
 import { cleanMerge, type MergeSpec } from '@huishouden/pwa-kit/merge';
+import { budgetScopeOf, readCap, ReadBudget, type ReadLedger } from '@huishouden/pwa-kit/read-budget';
 
 export interface Env {
   FIREBASE_PROJECT_ID: string;
@@ -20,24 +21,43 @@ export interface Env {
    */
   LINK_HOSTS?: string;
   /**
-   * Firestore document reads a day this Worker may spend on households (members, subscriptions,
-   * preferences, sources), of the project's free 50,000 shared with every app (README, "Limits"):
-   * 1/288 per run, past which households wait for a later run. The due-reminder queries come on
-   * top (2 reads a quiet run, 576 a day; up to 150 a run under a backlog). Unset or 0: no limit;
-   * any value that isn't a whole number makes every run throw.
+   * Firestore document reads a day this Worker may use, the due-reminder queries included, of the
+   * project's free 50,000 shared with every app and Worker (pwa-kit STANDARD.md "Read budgets";
+   * README, "Limits"). Counted per Pacific day in the READ_LEDGER Durable Object: once it is spent,
+   * runs read nothing until midnight Pacific. 1/288 of it per run is the share for household reads,
+   * past which households wait for a later run. Unset or 0: no limit; any value that isn't a whole
+   * number makes every run throw.
    */
   FIRESTORE_NOTIFY_READS?: string;
 }
 
+/** Firestore reads one run may be billed for: three windows of BATCH due reminders and a few households (the subrequest budget allows no more). */
+export const RUN_READS = 400;
+
 /** Runs a day: wrangler.toml's `crons`, every 5 minutes. A schedule change changes this too. */
 export const RUNS_PER_DAY = 288;
 
-/** `FIRESTORE_NOTIFY_READS` as reads per run: Infinity when unset or 0; a value that isn't a number throws. */
-export function readsPerRun(value: string | undefined): number {
-  if (value === undefined || value.trim() === '') return Infinity;
-  const day = Number(value);
-  if (!Number.isInteger(day) || day < 0) throw new Error(`FIRESTORE_NOTIFY_READS must be a whole number of reads a day (wrangler.toml [vars]), not "${value}".`);
-  return day === 0 ? Infinity : Math.max(1, Math.floor(day / RUNS_PER_DAY));
+/** `FIRESTORE_NOTIFY_READS`, parsed once (the kit's `readCap`): Infinity when unset or 0; a value that isn't a whole number throws. */
+export const dayReads = (env: Pick<Env, 'FIRESTORE_NOTIFY_READS'>): number => readCap('FIRESTORE_NOTIFY_READS', env.FIRESTORE_NOTIFY_READS);
+
+/**
+ * Each run's share of the day for household reads (a fairness throttle, not a cap: the first
+ * household of a run is always read): 1/RUNS_PER_DAY of the day's reads, at least one.
+ */
+export const householdShare = (day: number): number => (day === Infinity ? Infinity : Math.max(1, Math.floor(day / RUNS_PER_DAY)));
+
+/**
+ * The run's read budget (pwa-kit `ReadBudget`): RUN_READS for the run, the day's `FIRESTORE_NOTIFY_READS`
+ * in `ledger` (src/reads.ts), a pause for every run when Firestore answers 429.
+ */
+export function runReads(day: number, now: number, ledger: ReadLedger | null, log: (line: string) => void = () => {}): ReadBudget {
+  return new ReadBudget({
+    run: RUN_READS,
+    daily: [{ name: 'notify', cap: day }],
+    ledger,
+    now: () => now,
+    onLedgerError: (e) => log(`read ledger unavailable, counting this run only: ${e instanceof Error ? redact(e.message) : String(e)}`),
+  });
 }
 
 /** `LINK_HOSTS` as patterns. */
@@ -185,6 +205,14 @@ export interface RunStats {
   deferred: boolean;
   /** Firestore document reads the run was billed for (`Firestore.reads`). */
   reads: number;
+  /** This Worker's reads on the quota's day (midnight Pacific) with this run's, as the read ledger counts them. */
+  dayReads: number;
+  /**
+   * What stopped the run's reads, if anything: `paused` (Firestore's quota, seen by an earlier run),
+   * `notify` (the day's FIRESTORE_NOTIFY_READS spent), `run` (RUN_READS), `project` (Firestore's own
+   * quota, this run); '' when nothing did.
+   */
+  readStop: string;
   /**
    * True when Firestore refused for a project quota (`QuotaExhausted`) and the run stopped: before
    * claiming or pushing anything when refused while reading; after, when refused deleting a dropped
@@ -438,18 +466,29 @@ async function loadHousehold(db: Firestore, id: string): Promise<Household> {
  * One run: read what is due, choose fairly what fits in the subrequest budget, mark it sent, send
  * it, forget subscriptions the push service has dropped.
  */
-export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: string) => void = console.log): Promise<RunStats> {
-  const stats: RunStats = { due: 0, sent: 0, pushed: 0, failed: 0, removed: 0, late: 0, invalid: 0, raced: 0, noDevices: 0, capped: 0, done: 0, deferred: false, reads: 0, quota: false };
+export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: string) => void = console.log, { ledger = null }: { ledger?: ReadLedger | null } = {}): Promise<RunStats> {
+  const stats: RunStats = { due: 0, sent: 0, pushed: 0, failed: 0, removed: 0, late: 0, invalid: 0, raced: 0, noDevices: 0, capped: 0, done: 0, deferred: false, reads: 0, quota: false, dayReads: 0, readStop: '' };
   if (!env.FIREBASE_PROJECT_ID) throw new Error('FIREBASE_PROJECT_ID is not set (wrangler.toml [vars]).');
   if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_KEY) throw new Error('VAPID_PUBLIC_KEY (wrangler.toml) and VAPID_PRIVATE_KEY (secret) must both be set.');
-  const maxReads = readsPerRun(env.FIRESTORE_NOTIFY_READS);
+  const day = dayReads(env);
+  const maxReads = householdShare(day);
   const sa = parseServiceAccount(env.GOOGLE_SERVICE_ACCOUNT);
   const vapid: Vapid = await loadVapid(env.VAPID_PUBLIC_KEY, env.VAPID_PRIVATE_KEY, env.VAPID_SUBJECT || 'https://github.com/huishouden/notify');
   const budget = budgeted(fetchImpl, SUBREQUEST_BUDGET);
+  // Every Firestore read counted and capped: the run's RUN_READS, the day's share, the quota pause.
+  const reads = runReads(day, now, ledger, log);
+  const gate = await reads.begin();
+  if (gate) {
+    // Nothing is read: what is due goes out on a later run (up to MAX_LATE_MS late).
+    stats.readStop = gate.scope;
+    stats.deferred = true;
+    stats.dayReads = gate.reads ?? 0;
+    return stats;
+  }
   // Both queries start together; sharing the pending token keeps that to one token request.
   let token: Promise<string> | undefined;
   const hosts = linkHosts(env.LINK_HOSTS);
-  const db = new Firestore(env.FIREBASE_PROJECT_ID, () => (token ??= accessToken(sa, budget.fetch, now)), budget.fetch);
+  const db = new Firestore(env.FIREBASE_PROJECT_ID, () => (token ??= accessToken(sa, budget.fetch, now)), reads.fetch(budget.fetch));
 
   try {
     const [oldest, personal] = await Promise.all([
@@ -621,15 +660,26 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
     if (errors.length) throw new Error(`Firestore batchWrite: ${errors.length} of ${outcomes.marked.length + outcomes.removed.length} writes failed (${errors[0]})`);
   } catch (error) {
     if (error instanceof QuotaExhausted) {
-      // Still a failed run (the error alert fires), but one that says why and what it had read.
-      stats.quota = true;
+      // Still a failed run (the error alert fires), but one that says why and what it had read:
+      // Firestore's own quota (`quota`), or this Worker's read budget (`readStop`).
+      const scope = budgetScopeOf(error);
+      stats.quota = !scope;
+      stats.readStop = scope ?? 'project';
       stats.deferred = true;
-      stats.reads = db.reads;
       throw new RunStopped(stats, error);
     }
     if (!(error instanceof BudgetExhausted)) throw error;
     stats.deferred = true;
+  } finally {
+    // Every run that began reading adds its reads to the day, whatever ended it.
+    await settle(stats, db, reads);
   }
-  stats.reads = db.reads;
   return stats;
+}
+
+/** The run's reads into its stats and the day's ledger. */
+async function settle(stats: RunStats, db: Firestore, reads: ReadBudget): Promise<void> {
+  stats.reads = db.reads;
+  await reads.finish();
+  stats.dayReads = reads.summary().day.notify ?? stats.reads;
 }
