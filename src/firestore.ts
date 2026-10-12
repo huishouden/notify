@@ -46,6 +46,16 @@ export function documentPath(name: string): string[] {
   return at < 0 ? [] : name.slice(at + '/documents/'.length).split('/');
 }
 
+/**
+ * Firestore refused for a project quota (429 RESOURCE_EXHAUSTED): on the free plan, most often the
+ * day's 50,000 reads used up by every app and Worker together, until midnight Pacific (writes and
+ * deletes have daily quotas of their own). Nothing this Worker does fixes it; the run stops and
+ * says so (`quota` on the `NotifyRun` event; the message names the call).
+ */
+export class QuotaExhausted extends Error {
+  override name = 'QuotaExhausted';
+}
+
 export class Firestore {
   readonly root: string;
   /**
@@ -75,6 +85,7 @@ export class Firestore {
     // runQuery streams, so its errors come as a one-element array.
     const error = (Array.isArray(body) ? body[0] : body) as { error?: { message?: string; status?: string } } | undefined;
     const reason = error?.error?.status ? `${error.error.status} ` : '';
+    if (status === 429 || error?.error?.status === 'RESOURCE_EXHAUSTED') return new QuotaExhausted(`[${status}] Firestore ${what}: ${reason}${error?.error?.message ?? ''}`.trim());
     return new Error(`[${status}] Firestore ${what}: ${reason}${error?.error?.message ?? ''}`.trim());
   }
 

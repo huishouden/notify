@@ -1,5 +1,5 @@
 import { accessToken, parseServiceAccount, type Fetch } from './google';
-import { decodeFields, documentPath, Firestore, type RestDocument, type WriteOutcome } from './firestore';
+import { decodeFields, documentPath, Firestore, QuotaExhausted, type RestDocument, type WriteOutcome } from './firestore';
 import { loadVapid, pushRequest, type SubscriptionKeys, type Vapid } from './webpush';
 import { redact } from './redact';
 import { readSource, sourceAllowed, sourceReads, stillDue, type ReminderSource, type SourceDocs } from '@huishouden/pwa-kit/reminder-source';
@@ -169,9 +169,30 @@ export interface RunStats {
   deferred: boolean;
   /** Firestore document reads the run was billed for (`Firestore.reads`). */
   reads: number;
+  /**
+   * True when Firestore refused for a project quota (`QuotaExhausted`) and the run stopped: before
+   * claiming or pushing anything when refused while reading; after, when refused deleting a dropped
+   * subscription (what was claimed and pushed stays sent). What is still due goes out once reads are
+   * back (up to MAX_LATE_MS late).
+   */
+  quota: boolean;
+}
+
+/** A run that stopped, with what it had counted and why (`cause`): the heartbeat sends both (./heartbeat). */
+export class RunStopped extends Error {
+  override name = 'RunStopped';
+  constructor(
+    readonly stats: RunStats,
+    override readonly cause: Error,
+  ) {
+    super(cause.message);
+  }
 }
 
 class BudgetExhausted extends Error {}
+
+/** Errors that end the run, where a failed read would otherwise be logged and worked around. */
+const stopsRun = (e: unknown): boolean => e instanceof BudgetExhausted || e instanceof QuotaExhausted;
 
 /** Wraps fetch so a run never goes past its subrequest allowance. */
 export function budgeted(fetchImpl: Fetch, limit: number) {
@@ -350,7 +371,7 @@ async function loadSources(db: Firestore, householdId: string, paths: string[], 
   try {
     for (const [path, fields] of await db.getAll(paths)) if (path.startsWith(prefix)) out.set(path.slice(prefix.length), fields);
   } catch (error) {
-    if (error instanceof BudgetExhausted) throw error;
+    if (stopsRun(error)) throw error;
     log(`source read failed, sending without it: ${error instanceof Error ? redact(error.message) : String(error)}`);
   }
   return out;
@@ -378,7 +399,7 @@ async function loadHousehold(db: Firestore, id: string): Promise<Household> {
  * it, forget subscriptions the push service has dropped.
  */
 export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: string) => void = console.log): Promise<RunStats> {
-  const stats: RunStats = { due: 0, sent: 0, pushed: 0, failed: 0, removed: 0, late: 0, invalid: 0, raced: 0, noDevices: 0, capped: 0, done: 0, deferred: false, reads: 0 };
+  const stats: RunStats = { due: 0, sent: 0, pushed: 0, failed: 0, removed: 0, late: 0, invalid: 0, raced: 0, noDevices: 0, capped: 0, done: 0, deferred: false, reads: 0, quota: false };
   if (!env.FIREBASE_PROJECT_ID) throw new Error('FIREBASE_PROJECT_ID is not set (wrangler.toml [vars]).');
   if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_KEY) throw new Error('VAPID_PUBLIC_KEY (wrangler.toml) and VAPID_PRIVATE_KEY (secret) must both be set.');
   const maxReads = readsPerRun(env.FIRESTORE_NOTIFY_READS);
@@ -395,7 +416,7 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
       db.dueReminders(now, BATCH, 'ASCENDING'),
       // Reminders for named members only; while its index is missing or building, the run goes on without them.
       db.dueReminders(now, BATCH, 'ASCENDING', 'personalReminders').catch((error: unknown) => {
-        if (error instanceof BudgetExhausted) throw error;
+        if (stopsRun(error)) throw error;
         log(`personal reminders query failed, sending shared reminders only: ${error instanceof Error ? redact(error.message) : String(error)}`);
         return [] as RestDocument[];
       }),
@@ -407,7 +428,7 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
       oldest.length < BATCH
         ? []
         : await db.dueReminders(now, BATCH, 'DESCENDING').catch((error: unknown) => {
-            if (error instanceof BudgetExhausted) throw error;
+            if (stopsRun(error)) throw error;
             log(`newest-first query failed, using the oldest-first window only: ${error instanceof Error ? redact(error.message) : String(error)}`);
             return null;
           });
@@ -546,6 +567,13 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
 
     if (errors.length) throw new Error(`Firestore batchWrite: ${errors.length} of ${outcomes.marked.length + outcomes.removed.length} writes failed (${errors[0]})`);
   } catch (error) {
+    if (error instanceof QuotaExhausted) {
+      // Still a failed run (the error alert fires), but one that says why and what it had read.
+      stats.quota = true;
+      stats.deferred = true;
+      stats.reads = db.reads;
+      throw new RunStopped(stats, error);
+    }
     if (!(error instanceof BudgetExhausted)) throw error;
     stats.deferred = true;
   }

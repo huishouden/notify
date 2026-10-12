@@ -1,4 +1,4 @@
-import type { RunStats } from './send';
+import { RunStopped, type RunStats } from './send';
 import { redact } from './redact';
 
 export { redact };
@@ -22,13 +22,17 @@ export interface HeartbeatEnv {
 export const HEARTBEAT_SUBREQUESTS = 1;
 
 /** Counts sent with each run. A new `RunStats` field is not sent until it is listed here. */
-const COUNTS = ['due', 'sent', 'pushed', 'failed', 'removed', 'late', 'invalid', 'raced', 'noDevices', 'capped', 'done', 'deferred', 'reads'] as const satisfies readonly (keyof RunStats)[];
+const COUNTS = ['due', 'sent', 'pushed', 'failed', 'removed', 'late', 'invalid', 'raced', 'noDevices', 'capped', 'done', 'deferred', 'reads', 'quota'] as const satisfies readonly (keyof RunStats)[];
 
 
 export function heartbeatEvent(stats: RunStats | null, error: unknown, durationMs: number, scheduledTime: number): Record<string, string | number | boolean> {
   const event: Record<string, string | number | boolean> = { eventType: 'NotifyRun', durationMs, scheduledTime };
+  // A run that stopped part way still reports what it counted (Firestore's quota: `quota`, `reads`).
+  stats ??= error instanceof RunStopped ? error.stats : null;
   if (stats) for (const k of COUNTS) event[k] = stats[k];
-  if (error) event.error = redact(error instanceof Error ? `${error.name}: ${error.message}` : String(error));
+  // A stopped run reports why it stopped (its cause: `QuotaExhausted: ...`).
+  const shown = error instanceof RunStopped ? error.cause : error;
+  if (shown) event.error = redact(shown instanceof Error ? `${shown.name}: ${shown.message}` : String(shown));
   return event;
 }
 

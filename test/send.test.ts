@@ -2,13 +2,15 @@ import { beforeEach, describe, expect, test } from 'bun:test';
 import { fromB64url, type Bytes } from '../src/b64';
 import { importKeyPair, deriveKeys } from '../src/webpush';
 import { resetTokenCache } from '../src/google';
-import { deviceLang, toLangs, fairOrder, readsPerRun, sourceDone, linkHosts, payload, toTexts, PER_HOUSEHOLD_CAP, roleOf, run, safeLink, SUBREQUEST_BUDGET, targets, toMuted, toReminder, toSubscription, type Subscription } from '../src/send';
+import { deviceLang, toLangs, fairOrder, readsPerRun, sourceDone, linkHosts, payload, toTexts, PER_HOUSEHOLD_CAP, roleOf, run, RunStopped, safeLink, SUBREQUEST_BUDGET, targets, toMuted, toReminder, toSubscription, type Subscription } from '../src/send';
 import due from './fixtures/due-reminders.json';
 import household from './fixtures/household-h1.json';
 import subscriptions from './fixtures/subscriptions-h1.json';
 import tokenResponse from './fixtures/token-response.json';
 import batchWrite from './fixtures/batch-write-response.json';
 import indexMissing from './fixtures/index-missing.json';
+import quotaExhausted from './fixtures/quota-exhausted.json';
+import { QuotaExhausted } from '../src/firestore';
 import personalDue from './fixtures/personal-reminders.json';
 import v from './fixtures/rfc8291.json';
 import sourceDue from './fixtures/source-reminders.json';
@@ -383,7 +385,7 @@ describe('run', () => {
     const stats = await run(await testEnv(), NOW, fetchImpl, quiet);
     // Both reminders reach the dropped laptop; it is deleted once.
     // Reads: 3 due and the empty personal query (1), the household (1), its 5 subscriptions and no prefs (1).
-    expect(stats).toEqual({ due: 3, sent: 2, pushed: 3, failed: 2, removed: 1, late: 1, invalid: 0, raced: 0, noDevices: 0, capped: 0, done: 0, deferred: false, reads: 11 });
+    expect(stats).toEqual({ due: 3, sent: 2, pushed: 3, failed: 2, removed: 1, late: 1, invalid: 0, raced: 0, noDevices: 0, capped: 0, done: 0, deferred: false, reads: 11, quota: false });
 
     // The oldest-first window isn't full, so it holds everything due: no newest-first query.
     const queries = calls.filter((c) => c.url.endsWith(':runQuery'));
@@ -655,6 +657,27 @@ describe('run', () => {
     const stats = await run(await testEnv(), NOW, fetchImpl, (l) => lines.push(l));
     expect(stats.sent).toBe(2);
     expect(lines.some((l) => l.startsWith('personal reminders query failed'))).toBe(true);
+  });
+
+  test("Firestore's quota used up: the run stops before claiming or pushing anything, saying so with what it read", async () => {
+    const exhausted = () => json(quotaExhausted, 429);
+    const cases: [string, Route[]][] = [
+      ['runQuery', [(c) => (c.url.endsWith(':runQuery') && collectionOf(c) === 'reminders' ? exhausted() : undefined), ...routes()]],
+      ['runQuery', routes({ personal: exhausted })],
+      ['list', [(c) => (c.url.includes('/notificationPrefs') ? exhausted() : undefined), ...routes()]],
+      // The fallbacks that otherwise carry on: the newest-first window, and the sources' batchGet.
+      ['runQuery', routes({ due: backlog('h1', 50, NOW - 1000), newest: exhausted })],
+      ['batchGet', routes({ due: sourceDue as Entry[], batchGet: exhausted })],
+    ];
+    for (const [what, routed] of cases) {
+      const { fetchImpl, calls } = stubFetch(routed);
+      const error = await run(await testEnv(), NOW, fetchImpl, quiet).catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(RunStopped);
+      expect((error as RunStopped).cause).toBeInstanceOf(QuotaExhausted);
+      expect((error as RunStopped).message).toBe(`[429] Firestore ${what}: RESOURCE_EXHAUSTED Quota exceeded.`);
+      expect((error as RunStopped).stats).toMatchObject({ quota: true, deferred: true, sent: 0, pushed: 0 });
+      expect(calls.some((c) => c.url.endsWith(':batchWrite') || isPush(c))).toBe(false);
+    }
   });
 
   test('says which setting is missing', async () => {

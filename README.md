@@ -73,7 +73,8 @@ malformed ones (`invalid`), in the same `batchWrite` as the claims.
 Each run logs one line of counts (`due`, `sent`, `pushed`, `failed`, `removed`, `late`,
 `invalid`, `raced`, `noDevices`, `capped`, `done`: deleted unsent because their source is done,
 `deferred`: something due was left for a later
-run, and `reads`: the Firestore reads the run was billed).
+run, `reads`: the Firestore reads the run was billed, and `quota`: Firestore refused for the
+project's daily quota).
 
 The push message is JSON the kit's service worker shows: `{ title, body, url, tag, app }`;
 tapping it opens `url` in the app. Each device gets it in its member's language: the member's stored
@@ -123,6 +124,14 @@ which are in the writer's language.
   So the Worker's day is at most about 576 + 3,000 reads outside a backlog. Unset or 0: no cap.
   Any other value that isn't a whole number (digits only, such as 3000) makes every run throw (the
   `NotifyRun` error alert fires).
+
+  When the project's reads are used up (by anything: every app and Worker share them), Firestore
+  answers 429 `RESOURCE_EXHAUSTED` and the run stops where it is: refused while reading (the
+  queries, a household, the sources), before claiming or pushing anything. Refused later, deleting
+  a dropped subscription after the pushes, what was claimed and pushed stays sent. Either way the
+  run fails with `QuotaExhausted` and its `NotifyRun` event carries the counts so far with
+  `quota: true`. Reminders stay unsent and go out at the first run after reads come back, if
+  they are no more than 12 hours late (`MAX_LATE_MS`).
 - **iPhone and iPad** only show notifications for an app added to the Home Screen (Share > Add to
   Home Screen), on iOS/iPadOS 16.4 or later. In Safari tabs, and on older versions, there is no Web
   Push. `pushSupport()` in the kit says which case a device is in, so the app can explain.
@@ -203,7 +212,9 @@ try a run locally: put the two secrets in `.dev.vars` (git-ignored), `bun run de
 
 Each run sends one `NotifyRun` event (the run's counts, the Firestore `reads` it was billed, its duration and, if it threw, the error
 message; never reminder text, households or addresses) to New Relic's Event API, where alerts fire
-when no run arrives for 20 minutes, a run throws, or more than 5 pushes fail in an hour (the
+when no run arrives for 20 minutes, a run throws (a run stopped by Firestore's quota throws too,
+and its event says `quota: true`, so `SELECT count(*) FROM NotifyRun WHERE quota IS TRUE` tells it
+from a crash), or more than 5 pushes fail in an hour (the
 `failed` count; pwa-kit `docs/observability.md`). A heartbeat that can't be sent is logged. It uses one of
 the subrequests a run keeps spare. Without these two settings nothing is sent:
 

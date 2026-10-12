@@ -1,8 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 import { heartbeatEvent, monitoredRun, redact, sendHeartbeat } from '../src/heartbeat';
-import type { RunStats } from '../src/send';
+import { RunStopped, type RunStats } from '../src/send';
+import { QuotaExhausted } from '../src/firestore';
 
-const stats: RunStats = { due: 2, sent: 2, pushed: 3, failed: 0, removed: 1, late: 0, invalid: 0, raced: 0, noDevices: 0, capped: 0, done: 0, deferred: false, reads: 12 };
+const stats: RunStats = { due: 2, sent: 2, pushed: 3, failed: 0, removed: 1, late: 0, invalid: 0, raced: 0, noDevices: 0, capped: 0, done: 0, deferred: false, reads: 12, quota: false };
 const ENV = { NEW_RELIC_ACCOUNT_ID: '1234567', NEW_RELIC_LICENSE_KEY: 'example-key' };
 
 function recorder(response: () => Response | Promise<Response> = () => new Response('{"success":true}')) {
@@ -15,6 +16,12 @@ describe('heartbeat event', () => {
   test('carries the listed counts only', () => {
     const extra = { ...stats, hosts: ['push.example.com'] } as unknown as RunStats;
     expect(heartbeatEvent(extra, null, 120, 1_900_000_000_000)).toEqual({ eventType: 'NotifyRun', durationMs: 120, scheduledTime: 1_900_000_000_000, ...stats });
+  });
+
+  test('a run stopped by Firestore’s quota carries its counts, `quota` and the error', () => {
+    const counted = { ...stats, sent: 0, pushed: 0, removed: 0, reads: 2, deferred: true, quota: true };
+    const e = heartbeatEvent(null, new RunStopped(counted, new QuotaExhausted('[429] Firestore runQuery: RESOURCE_EXHAUSTED Quota exceeded.')), 5, 1);
+    expect(e).toEqual({ eventType: 'NotifyRun', durationMs: 5, scheduledTime: 1, ...counted, error: 'QuotaExhausted: [429] Firestore runQuery: RESOURCE_EXHAUSTED Quota exceeded.' });
   });
 
   test('carries a failed run’s error, without addresses or household paths', () => {
