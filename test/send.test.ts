@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, test } from 'bun:test';
 import { fromB64url, type Bytes } from '../src/b64';
 import { importKeyPair, deriveKeys } from '../src/webpush';
 import { resetTokenCache } from '../src/google';
-import { deviceLang, toLangs, fairOrder, readsPerRun, sourceDone, linkHosts, payload, toTexts, PER_HOUSEHOLD_CAP, roleOf, run, RunStopped, safeLink, SUBREQUEST_BUDGET, targets, toMuted, toReminder, toSubscription, type Subscription } from '../src/send';
+import { deviceLang, groupPayload, mergeKeyOf, toLangs, fairOrder, readsPerRun, sourceDone, linkHosts, payload, toTexts, PER_HOUSEHOLD_CAP, roleOf, run, RunStopped, safeLink, SUBREQUEST_BUDGET, targets, toMuted, toReminder, toSubscription, type Subscription } from '../src/send';
 import due from './fixtures/due-reminders.json';
 import household from './fixtures/household-h1.json';
 import subscriptions from './fixtures/subscriptions-h1.json';
@@ -16,6 +16,7 @@ import v from './fixtures/rfc8291.json';
 import sourceDue from './fixtures/source-reminders.json';
 import batchGetBills from './fixtures/batch-get-bills.json';
 import groupedSource from './fixtures/health-grouped-source.json';
+import mergeDue from './fixtures/merge-reminders.json';
 import { json, stubFetch, testEnv, type Call, type Route } from './helpers';
 
 const NOW = 1_767_268_800_000;
@@ -838,5 +839,81 @@ describe('reminders with a source', () => {
     expect(crowd.calls.length).toBeLessThanOrEqual(SUBREQUEST_BUDGET);
     expect(crowdStats).toMatchObject({ deferred: true, done: 0 });
     expect(crowdStats.sent).toBeGreaterThan(0);
+  });
+});
+
+describe('reminders that merge', () => {
+  // Home's "Take the garbage out" and "Put the recycling out", due the same minute for everyone,
+  // each with its own source (the thing to do before not yet ticked, the event still there).
+  const entries = mergeDue as Entry[];
+  const [garbage, recycling] = entries.map((e) => toReminder(e.document as never)!);
+  const withApp = (e: Entry, app: string): Entry => {
+    const c = structuredClone(e);
+    (c.document!.fields!.app as { stringValue: string }).stringValue = app;
+    return c;
+  };
+  const pushedTitles = async (calls: Call[]) =>
+    (await Promise.all(calls.filter(isPush).filter((c) => c.url.includes('push.example.net')).map((c) => decryptPush(c.body as Bytes).catch(() => null)))).filter(Boolean).map((p) => p!.title);
+  /** The records' sources as read: `ticked` things to do before are written (done), the events exist. */
+  const sources = (ticked: string[]) => (c: Call) => {
+    const asked = (c.body as { documents: string[] }).documents;
+    return json(
+      asked.map((name) => {
+        const found = name.includes('/homeEvents/') || ticked.some((t) => name.endsWith(`/homeEventPrep/${t}_2026-01-02`));
+        return found ? { found: { name, fields: {}, createTime: '2026-01-01T00:00:00Z', updateTime: '2026-01-01T00:00:00Z' }, readTime: '2026-01-01T12:00:00.000000Z' } : { missing: name, readTime: '2026-01-01T12:00:00.000000Z' };
+      }),
+    );
+  };
+
+  test('the same minute, people and key: one key; another minute, app or audience: not', () => {
+    expect(mergeKeyOf(garbage)).toBe(mergeKeyOf(recycling));
+    expect(mergeKeyOf({ ...recycling, at: recycling.at + 60_000 })).not.toBe(mergeKeyOf(garbage));
+    expect(mergeKeyOf({ ...recycling, householdId: 'h2' })).not.toBe(mergeKeyOf(garbage));
+    expect(mergeKeyOf({ ...recycling, private: true })).not.toBe(mergeKeyOf(garbage));
+    expect(mergeKeyOf({ ...recycling, personal: true, audience: ['alex@example.com'] })).not.toBe(mergeKeyOf(garbage));
+    expect(mergeKeyOf({ ...recycling, merge: null })).toBeNull();
+    expect(mergeKeyOf({ ...recycling, recipients: ['alex@example.com'] })).not.toBe(mergeKeyOf(garbage));
+    expect(mergeKeyOf({ ...recycling, app: 'tasks' })).not.toBe(mergeKeyOf(garbage));
+  });
+
+  test('another app\'s reminder at the same minute goes on its own, also to a member who muted one of them', async () => {
+    const { fetchImpl, calls } = stubFetch(routes({ due: entries.map((e, i) => (i === 1 ? withApp(e, 'tasks') : e)), batchGet: sources([]), prefs: () => ({ documents: [{ name: `${DOCS}/households/h1/notificationPrefs/sam@example.com`, fields: { muted: { arrayValue: { values: [{ stringValue: 'home' }] } } } }] }) }));
+    expect(await run(await testEnv(), NOW, fetchImpl, quiet)).toMatchObject({ sent: 2 });
+    expect(new Set(await pushedTitles(calls))).toEqual(new Set(['Take the garbage out', 'Put the recycling out']));
+  });
+
+  test('one notification per device, both marked sent', async () => {
+    const { fetchImpl, calls } = stubFetch(routes({ due: entries, batchGet: sources([]) }));
+    const stats = await run(await testEnv(), NOW, fetchImpl, quiet);
+    expect(stats).toMatchObject({ due: 2, sent: 2, done: 0 });
+    const titles = await pushedTitles(calls);
+    expect(titles.length).toBeGreaterThan(0);
+    expect(new Set(titles)).toEqual(new Set(['Take the garbage and recycling out']));
+    expect(writesOf(calls)[0].filter((w) => w.update).map((w) => shortName(w.update.name))).toEqual(['households/h1/reminders/home-prep-garbage-1', 'households/h1/reminders/home-prep-recycling-1']);
+  });
+
+  test('in the device\'s language', () => {
+    const body = JSON.parse(groupPayload([garbage, recycling], 'nl'));
+    expect(body).toMatchObject({ title: 'Zet het afval en recycling buiten', body: 'Morgen afval ophalen\nMorgen recycling ophalen', tag: 'home-prep-garbage-1' });
+    expect(JSON.parse(groupPayload([garbage, recycling], undefined, { 'alex@example.com': 'en' })).title).toBe('Take the garbage and recycling out');
+    expect(JSON.parse(groupPayload([recycling], 'en')).title).toBe('Put the recycling out');
+  });
+
+  test('one ticked already: the other goes out alone, in its own words', async () => {
+    const { fetchImpl, calls } = stubFetch(routes({ due: entries, batchGet: sources(['garbage']) }));
+    expect(await run(await testEnv(), NOW, fetchImpl, quiet)).toMatchObject({ sent: 1, done: 1 });
+    expect(new Set(await pushedTitles(calls))).toEqual(new Set(['Put the recycling out']));
+  });
+
+  test('both ticked: nothing is sent', async () => {
+    const { fetchImpl, calls } = stubFetch(routes({ due: entries, batchGet: sources(['garbage', 'recycling']) }));
+    expect(await run(await testEnv(), NOW, fetchImpl, quiet)).toMatchObject({ sent: 0, done: 2 });
+    expect(await pushedTitles(calls)).toEqual([]);
+  });
+
+  test('one claimed by another run meanwhile: the rest still go out together', async () => {
+    const { fetchImpl, calls } = stubFetch(routes({ due: entries, batchGet: sources([]), write: (name) => (name.endsWith('/home-prep-garbage-1') ? 'precondition' : undefined) }));
+    expect(await run(await testEnv(), NOW, fetchImpl, quiet)).toMatchObject({ sent: 1, raced: 1 });
+    expect(new Set(await pushedTitles(calls))).toEqual(new Set(['Put the recycling out']));
   });
 });

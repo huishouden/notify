@@ -3,6 +3,8 @@ import { decodeFields, documentPath, Firestore, QuotaExhausted, type RestDocumen
 import { loadVapid, pushRequest, type SubscriptionKeys, type Vapid } from './webpush';
 import { redact } from './redact';
 import { readSource, sourceAllowed, sourceReads, stillDue, type ReminderSource, type SourceDocs } from '@huishouden/pwa-kit/reminder-source';
+import { mergedReminderText, reminderMergeKey } from '@huishouden/pwa-kit/reminder-core';
+import { cleanMerge, type MergeSpec } from '@huishouden/pwa-kit/merge';
 
 export interface Env {
   FIREBASE_PROJECT_ID: string;
@@ -94,7 +96,12 @@ export interface Reminder {
    * The same notification in the recipients' other languages (pwa-kit `./reminders` `texts`, built
    * with `localizeReminders`): each device gets its member's (`deviceLang`), else `title`/`body`.
    */
-  texts: Partial<Record<Lang, { title: string; body: string }>>;
+  texts: Partial<Record<Lang, Text>>;
+  /**
+   * May go out as one notification with the household's other reminders due the same minute for the
+   * same people with the same key (pwa-kit `./merge`): "Take the garbage and recycling out".
+   */
+  merge: MergeSpec | null;
   /**
    * The records it is about and when it is still due (pwa-kit `./reminder-source`): one no longer
    * due is deleted instead of sent. Null without one, or with one past the kit's limits.
@@ -110,14 +117,23 @@ export const LANGS = ['en', 'es', 'nl'] as const;
 export type Lang = (typeof LANGS)[number];
 const isLang = (v: unknown): v is Lang => typeof v === 'string' && (LANGS as readonly string[]).includes(v);
 
-/** A reminder's `texts`, keeping only known languages with a non-empty title and a string body. */
-export function toTexts(value: unknown): Partial<Record<Lang, { title: string; body: string }>> {
+/** A reminder's words in one language, and its merge's part and title (pwa-kit `./reminder-core` `ReminderText`). */
+export interface Text {
+  title: string;
+  body: string;
+  mergePart?: string;
+  mergeTitle?: string;
+}
+
+/** A reminder's `texts`, keeping only known languages with a non-empty title and a string body (and the merge's words when strings). */
+export function toTexts(value: unknown): Partial<Record<Lang, Text>> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  const out: Partial<Record<Lang, { title: string; body: string }>> = {};
+  const out: Partial<Record<Lang, Text>> = {};
   for (const [lang, text] of Object.entries(value as Record<string, unknown>)) {
     if (!isLang(lang) || !text || typeof text !== 'object') continue;
-    const { title, body } = text as { title?: unknown; body?: unknown };
-    if (typeof title === 'string' && title) out[lang] = { title, body: typeof body === 'string' ? body : '' };
+    const { title, body, mergePart, mergeTitle } = text as { title?: unknown; body?: unknown; mergePart?: unknown; mergeTitle?: unknown };
+    if (typeof title === 'string' && title)
+      out[lang] = { title, body: typeof body === 'string' ? body : '', ...(typeof mergePart === 'string' && mergePart ? { mergePart } : {}), ...(typeof mergeTitle === 'string' && mergeTitle ? { mergeTitle } : {}) };
   }
   return out;
 }
@@ -217,7 +233,7 @@ export function toReminder(doc: RestDocument, hosts: RegExp[] = []): Reminder | 
   if (personal && audience.length === 0) return null;
   const url = safeLink(d.url, hosts);
   const isPrivate = d.private !== false || MONEY_APPS.includes(d.app);
-  return { id: path[3], householdId: path[1], app: d.app, title: d.title, body: typeof d.body === 'string' ? d.body : '', at: d.at, url, recipients, private: isPrivate, personal, audience, texts: toTexts(d.texts), source: readSource(d.app, d.source), by: typeof d.by === 'string' ? d.by.toLowerCase() : '', doc };
+  return { id: path[3], householdId: path[1], app: d.app, title: d.title, body: typeof d.body === 'string' ? d.body : '', at: d.at, url, recipients, private: isPrivate, personal, audience, texts: toTexts(d.texts), merge: cleanMerge(d.merge) ?? null, source: readSource(d.app, d.source), by: typeof d.by === 'string' ? d.by.toLowerCase() : '', doc };
 }
 
 export function toSubscription(doc: RestDocument): Subscription | null {
@@ -299,6 +315,30 @@ export function toLangs(value: unknown): Partial<Record<string, Lang>> {
 export function payload(reminder: Reminder, lang?: Lang): string {
   const text = (lang && reminder.texts[lang]) || { title: reminder.title, body: reminder.body };
   return JSON.stringify({ title: text.title, body: text.body, url: reminder.url, tag: reminder.id, app: reminder.app });
+}
+
+/**
+ * What reminders merge under (pwa-kit `reminderMergeKey`: the app, merge key, minute, recipients and
+ * readers), within one household and one collection. Null for a reminder without a merge.
+ */
+export function mergeKeyOf(r: Reminder): string | null {
+  const key = reminderMergeKey({ ...r, merge: r.merge ?? undefined, private: r.personal || r.private, audience: r.personal ? r.audience : undefined });
+  return key && `${r.householdId}|${r.personal ? 'personal' : 'shared'}|${key}`;
+}
+
+/**
+ * What the device shows for reminders sent as one: one alone as `payload`; several with the combined
+ * title and each body (pwa-kit `mergedReminderText`) in the device's language, else in the language
+ * of whoever wrote the first (whose words are the reminders' own), tagged and linked as the first.
+ */
+export function groupPayload(members: Reminder[], lang: Lang | undefined, langs: Partial<Record<string, Lang>> = {}): string {
+  if (members.length === 1) return payload(members[0], lang);
+  const first = [...members].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))[0];
+  const text = mergedReminderText(
+    members.map((m) => ({ ...m, merge: m.merge ?? undefined })),
+    lang ?? langs[first.by] ?? 'en',
+  );
+  return JSON.stringify({ title: text.title, body: text.body, url: first.url, tag: first.id, app: first.app });
 }
 
 interface Household {
@@ -459,7 +499,9 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
     const households = new Map<string, Household>();
     const sources = new Map<string, SourceDocs>();
     const blocked = new Set<string>();
-    const chosen: { reminder: Reminder; to: Subscription[] }[] = [];
+    const chosen: { reminder: Reminder; to: Subscription[]; members: Reminder[] }[] = [];
+    // Reminders that merge go out as one: the first chosen carries the devices, the rest join it.
+    const merging = new Map<string, Reminder[]>();
     const finished: Reminder[] = [];
     let pushes = 0;
     let left = 0;
@@ -496,6 +538,15 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
         continue;
       }
       let to = targets(reminder, household.members, household.subscriptions, household.roles, household.muted);
+      // Joins a group only when it would reach exactly the same devices: whatever the key says, no
+      // reminder's words reach a device that wouldn't get it on its own.
+      const sameKey = mergeKeyOf(reminder);
+      const mergeKey = sameKey && `${sameKey}|${to.map((s) => s.endpoint).sort().join(',')}`;
+      const joining = mergeKey ? merging.get(mergeKey) : undefined;
+      if (joining) {
+        joining.push(reminder);
+        continue;
+      }
       // Claimed only when every push fits in this run: never sent twice, never half.
       if (to.length > spare) {
         if (chosen.length > 0 || spare < 1) {
@@ -508,12 +559,15 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
         log(`reminder has ${to.length} devices; sending to ${spare}`);
         to = to.slice(0, spare);
       }
-      chosen.push({ reminder, to });
+      const members = [reminder];
+      chosen.push({ reminder, to, members });
+      if (mergeKey) merging.set(mergeKey, members);
       pushes += to.length;
     }
     stats.deferred = left > 0 || capped > 0 || unread;
 
-    const outcomes = await db.commit({ mark: [...marks.map((m) => m.doc), ...chosen.map((c) => c.reminder.doc)], remove: finished.map((r) => r.doc) }, now);
+    const claims = chosen.flatMap((c) => c.members);
+    const outcomes = await db.commit({ mark: [...marks.map((m) => m.doc), ...claims.map((r) => r.doc)], remove: finished.map((r) => r.doc) }, now);
     const errors: string[] = [];
     const count = (outcome: WriteOutcome, ok: () => void) => {
       if (outcome.ok) ok();
@@ -521,19 +575,18 @@ export async function run(env: Env, now: number, fetchImpl: Fetch, log: (line: s
       else errors.push(outcome.error);
     };
     marks.forEach((m, i) => count(outcomes.marked[i], () => stats[m.kind]++));
-    const claimed = chosen.filter((c, i) => {
-      let ok = false;
-      count(outcomes.marked[marks.length + i], () => (ok = true));
-      return ok;
-    });
+    const won = new Set<Reminder>();
+    claims.forEach((r, i) => count(outcomes.marked[marks.length + i], () => won.add(r)));
+    // A group goes out with the members this run claimed; none claimed, nothing goes.
+    const claimed = chosen.map((c) => ({ ...c, members: c.members.filter((m) => won.has(m)) })).filter((c) => c.members.length > 0);
     outcomes.removed.forEach((outcome) => count(outcome, () => stats.done++));
 
-    stats.sent = claimed.length;
-    const deliveries = claimed.flatMap(({ reminder, to }) => {
+    stats.sent = won.size;
+    const deliveries = claimed.flatMap(({ reminder, to, members }) => {
       if (to.length === 0) stats.noDevices++;
       // Each device in its member's language, when the reminder carries it.
       const langs = households.get(reminder.householdId)?.langs ?? {};
-      return to.map((sub) => ({ sub, body: payload(reminder, deviceLang(sub, langs)) }));
+      return to.map((sub) => ({ sub, body: groupPayload(members, deviceLang(sub, langs), langs) }));
     });
     const results = await Promise.all(
       deliveries.map(async ({ sub, body }) => {

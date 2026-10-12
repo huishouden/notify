@@ -52,6 +52,12 @@ Every 5 minutes:
    tells anyone more than they could see in the app. Reminders without a source, with one that
    doesn't count, or whose read fails (one log line) are sent as before.
 
+   Reminders that merge (pwa-kit `./merge`: the same app and `merge` key, due the same minute,
+   for the same recipients and readers, in one household) go out as one notification: "Take the
+   garbage and recycling out", each body on its own line, in each device's language. Only those
+   still due join it: one whose source says it is done is deleted as above, and when all are,
+   nothing is sent. Each is marked sent on its own; the notification carries those this run claimed.
+
    A reminder is taken only when all of its devices fit in what is left of the run's 45
    requests; the rest wait for the next run, and a household's later reminders wait behind an
    earlier one that didn't fit. A reminder with more devices than any run allows, when it is

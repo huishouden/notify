@@ -1,0 +1,232 @@
+[
+ {
+  "document": {
+   "name": "projects/demo-huishouden/databases/(default)/documents/households/h1/reminders/home-prep-garbage-1",
+   "fields": {
+    "app": {
+     "stringValue": "home"
+    },
+    "title": {
+     "stringValue": "Take the garbage out"
+    },
+    "body": {
+     "stringValue": "Garbage pickup tomorrow"
+    },
+    "at": {
+     "integerValue": "1767268740000"
+    },
+    "url": {
+     "stringValue": "https://huishouden-staging.web.app/home/#regular"
+    },
+    "recipients": {
+     "stringValue": "all"
+    },
+    "ref": {
+     "stringValue": "home:prep:garbage"
+    },
+    "private": {
+     "booleanValue": false
+    },
+    "source": {
+     "mapValue": {
+      "fields": {
+       "checks": {
+        "arrayValue": {
+         "values": [
+          {
+           "mapValue": {
+            "fields": {
+             "doc": {
+              "stringValue": "homeEventPrep/garbage_2026-01-02"
+             },
+             "absent": {
+              "booleanValue": true
+             }
+            }
+           }
+          },
+          {
+           "mapValue": {
+            "fields": {
+             "doc": {
+              "stringValue": "homeEvents/garbage"
+             }
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
+    },
+    "merge": {
+     "mapValue": {
+      "fields": {
+       "key": {
+        "stringValue": "prep"
+       },
+       "part": {
+        "stringValue": "garbage"
+       },
+       "title": {
+        "stringValue": "Take the {parts} out"
+       }
+      }
+     }
+    },
+    "texts": {
+     "mapValue": {
+      "fields": {
+       "nl": {
+        "mapValue": {
+         "fields": {
+          "title": {
+           "stringValue": "Afval buiten zetten"
+          },
+          "body": {
+           "stringValue": "Morgen afval ophalen"
+          },
+          "mergePart": {
+           "stringValue": "afval"
+          },
+          "mergeTitle": {
+           "stringValue": "Zet het {parts} buiten"
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "sent": {
+     "booleanValue": false
+    },
+    "createdAt": {
+     "integerValue": "1767182400000"
+    },
+    "by": {
+     "stringValue": "alex@example.com"
+    }
+   },
+   "createTime": "2026-01-01T00:00:00.000000Z",
+   "updateTime": "2026-01-01T00:00:01.000001Z"
+  },
+  "readTime": "2026-01-01T12:00:00.000000Z"
+ },
+ {
+  "document": {
+   "name": "projects/demo-huishouden/databases/(default)/documents/households/h1/reminders/home-prep-recycling-1",
+   "fields": {
+    "app": {
+     "stringValue": "home"
+    },
+    "title": {
+     "stringValue": "Put the recycling out"
+    },
+    "body": {
+     "stringValue": "Recycling pickup tomorrow"
+    },
+    "at": {
+     "integerValue": "1767268740000"
+    },
+    "url": {
+     "stringValue": "https://huishouden-staging.web.app/home/#regular"
+    },
+    "recipients": {
+     "stringValue": "all"
+    },
+    "ref": {
+     "stringValue": "home:prep:recycling"
+    },
+    "private": {
+     "booleanValue": false
+    },
+    "source": {
+     "mapValue": {
+      "fields": {
+       "checks": {
+        "arrayValue": {
+         "values": [
+          {
+           "mapValue": {
+            "fields": {
+             "doc": {
+              "stringValue": "homeEventPrep/recycling_2026-01-02"
+             },
+             "absent": {
+              "booleanValue": true
+             }
+            }
+           }
+          },
+          {
+           "mapValue": {
+            "fields": {
+             "doc": {
+              "stringValue": "homeEvents/recycling"
+             }
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
+    },
+    "merge": {
+     "mapValue": {
+      "fields": {
+       "key": {
+        "stringValue": "prep"
+       },
+       "part": {
+        "stringValue": "recycling"
+       },
+       "title": {
+        "stringValue": "Take the {parts} out"
+       }
+      }
+     }
+    },
+    "texts": {
+     "mapValue": {
+      "fields": {
+       "nl": {
+        "mapValue": {
+         "fields": {
+          "title": {
+           "stringValue": "Recycling buiten zetten"
+          },
+          "body": {
+           "stringValue": "Morgen recycling ophalen"
+          },
+          "mergePart": {
+           "stringValue": "recycling"
+          },
+          "mergeTitle": {
+           "stringValue": "Zet het {parts} buiten"
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "sent": {
+     "booleanValue": false
+    },
+    "createdAt": {
+     "integerValue": "1767182400000"
+    },
+    "by": {
+     "stringValue": "alex@example.com"
+    }
+   },
+   "createTime": "2026-01-01T00:00:00.000000Z",
+   "updateTime": "2026-01-01T00:00:02.000002Z"
+  },
+  "readTime": "2026-01-01T12:00:00.000000Z"
+ }
+]
